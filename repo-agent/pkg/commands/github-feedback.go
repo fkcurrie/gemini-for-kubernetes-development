@@ -67,9 +67,63 @@ func RunGithubFeedback(ctx context.Context, opt GithubFeedbackOptions) error {
 	if opt.Repo == "" {
 		return fmt.Errorf("--repo is required")
 	}
+
+	var sandbox *CodebotSandbox
+
 	if opt.Sandbox == "" {
-		// TODO: We could choose instead to launch a sandbox here
-		return fmt.Errorf("--sandbox is required")
+		pr := &github.PullRequest{Repo: *repo, PullRequestNumber: opt.PullRequest}
+
+		found := false
+		sandbox, found, err = findSandboxForPullRequest(ctx, kube, repo, pr)
+		if err != nil {
+			return err
+		}
+
+		if !found {
+			sandbox, err = launchSandboxForPullRequest(ctx, kube, repo, pr)
+			if err != nil {
+				return fmt.Errorf("launching sandbox for pull request: %w", err)
+			}
+		}
+	} else {
+		podID, err := findSandboxPod(ctx, opt.Sandbox)
+		if err != nil {
+			return err
+		}
+		if podID == nil {
+			return fmt.Errorf("sandbox %q not found", opt.Sandbox)
+		}
+
+		sandbox = &CodebotSandbox{
+			kube:        kube,
+			podID:       *podID,
+			repo:        repo,
+			pullRequest: &github.PullRequest{Repo: *repo, PullRequestNumber: opt.PullRequest},
+		}
+	}
+
+	if err := sandbox.setupGit(ctx); err != nil {
+		return fmt.Errorf("setting up git in sandbox: %w", err)
+	}
+
+	if err := sandbox.SetupGitRepos(ctx); err != nil {
+		return fmt.Errorf("setting up git branches in sandbox: %w", err)
+	}
+
+	// Get PR details to checkout the right branch
+	prObj, _, err := githubAPI.PullRequests.Get(ctx, repo.Owner, repo.Name, opt.PullRequest)
+	if err != nil {
+		return fmt.Errorf("failed to get pull request details: %w", err)
+	}
+
+	// Checkout the PR branch
+	headRef := prObj.GetHead().GetRef()
+	if err := sandbox.CheckoutExistingBranch(ctx, headRef); err != nil {
+		return fmt.Errorf("checking out branch %q: %w", headRef, err)
+	}
+
+	if err := configureGemini(ctx, sandbox); err != nil {
+		return fmt.Errorf("configuring gemini in sandbox: %w", err)
 	}
 
 	prompt, err := prompts.FixPRFeedbackPrompt(ctx, githubAPI, repo, opt.PullRequest)
@@ -77,15 +131,7 @@ func RunGithubFeedback(ctx context.Context, opt GithubFeedbackOptions) error {
 		return fmt.Errorf("failed to generate prompt for pull-request: %w", err)
 	}
 
-	podID, err := findSandboxPod(ctx, opt.Sandbox)
-	if err != nil {
-		return err
-	}
-	if podID == nil {
-		return fmt.Errorf("sandbox %q not found", opt.Sandbox)
-	}
-
-	geminiAPIKey, err := GetGeminiAPIKey(podID.Namespace + "/" + podID.Name)
+	geminiAPIKey, err := GetGeminiAPIKey(sandbox.podID.Namespace + "/" + sandbox.podID.Name)
 	if err != nil {
 		return err
 	}
@@ -93,18 +139,18 @@ func RunGithubFeedback(ctx context.Context, opt GithubFeedbackOptions) error {
 	// Copy the prompt into the pod (for now)
 	if len(prompt) > 0 {
 		path := "/workspaces/prompt.txt"
-		if err := writeFileInPod(ctx, kube, *podID, path, prompt); err != nil {
+		if err := writeFileInPod(ctx, kube, sandbox.podID, path, prompt); err != nil {
 			return fmt.Errorf("copying prompt into sandbox pod: %w", err)
 		}
 
-		log.Info("wrote prompt into sandbox pod", "pod", podID.Name, "path", path)
+		log.Info("wrote prompt into sandbox pod", "pod", sandbox.podID.Name, "path", path)
 	}
 
 	workdir := fmt.Sprintf("/workspaces/%s", repo.FilesystemName())
 
 	// Run gemini with API key and prompt
 	{
-		log.Info("Running gemini in pod", "pod", podID.Name)
+		log.Info("Running gemini in pod", "pod", sandbox.podID.Name)
 
 		// TODO:
 		// export GEMINI_TELEMETRY_ENABLED=true
@@ -117,7 +163,7 @@ func RunGithubFeedback(ctx context.Context, opt GithubFeedbackOptions) error {
 		}
 		opts.Secrets = []string{geminiAPIKey}
 
-		if err := execInPod(ctx, kube, *podID, opts); err != nil {
+		if err := execInPod(ctx, kube, sandbox.podID, opts); err != nil {
 			return fmt.Errorf("running gemini in pod: %w", err)
 		}
 	}
