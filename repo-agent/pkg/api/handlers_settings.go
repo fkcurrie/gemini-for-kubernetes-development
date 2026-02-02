@@ -40,6 +40,9 @@ func (s *Server) getSettings(c *gin.Context) {
 		if val, ok := sec.Data["gemini"]; ok && len(val) > 0 {
 			settings["gemini_api_key_set"] = true
 		}
+		if val, ok := sec.Data["project_id"]; ok && len(val) > 0 {
+			settings["gemini_project_id"] = string(val)
+		}
 	}
 	c.JSON(http.StatusOK, settings)
 }
@@ -47,8 +50,9 @@ func (s *Server) getSettings(c *gin.Context) {
 func (s *Server) updateSettings(c *gin.Context) {
 	namespace := s.Auth.GetNamespaceFromContext(c)
 	var payload struct {
-		GithubPAT    *string `json:"github_pat"` // Use pointer to distinguish between empty string and missing field
-		GeminiAPIKey string  `json:"gemini_api_key"`
+		GithubPAT       *string `json:"github_pat"` // Use pointer to distinguish between empty string and missing field
+		GeminiAPIKey    string  `json:"gemini_api_key"`
+		GeminiProjectID *string `json:"gemini_project_id"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -89,6 +93,22 @@ func (s *Server) updateSettings(c *gin.Context) {
 		if err != nil {
 			klog.Infof("Failed to update Gemini API Key: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update Gemini API Key"})
+			return
+		}
+	}
+
+	if payload.GeminiProjectID != nil {
+		projectID := *payload.GeminiProjectID
+		var data map[string][]byte
+		if projectID == "" {
+			data = map[string][]byte{"project_id": nil}
+		} else {
+			data = map[string][]byte{"project_id": []byte(projectID)}
+		}
+		err := s.K8sManager.UpdateSecret(c.Request.Context(), namespace, k8s.GeminiSecretName, data, nil)
+		if err != nil {
+			klog.Infof("Failed to update Gemini Project ID: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update Gemini Project ID"})
 			return
 		}
 	}
