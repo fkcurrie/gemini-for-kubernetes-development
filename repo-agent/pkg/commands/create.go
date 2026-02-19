@@ -24,6 +24,7 @@ type CreateOptions struct {
 	DevcontainerConfigRef string
 	GithubLogin           string
 	Image                 string
+	GPU                   bool
 }
 
 // InitDefaults initializes default values for CreateOptions.
@@ -54,6 +55,7 @@ func BuildCreateCommand() *cobra.Command {
 	cmd.Flags().StringVar(&opt.DevcontainerConfigRef, "devcontainer-config-ref", "devcontainer-json", "Devcontainer config ref to use")
 	cmd.Flags().StringVar(&opt.GithubLogin, "github-login", "", "GitHub login to use")
 	cmd.Flags().StringVar(&opt.Image, "image", "", "Custom Docker image to use instead of devcontainer-config-ref")
+	cmd.Flags().BoolVar(&opt.GPU, "gpu", false, "Attach a GPU to the sandbox")
 
 	// Mark required flags using : _ = cmd.MarkFlagRequired("branch")
 
@@ -144,6 +146,7 @@ func RunCreate(ctx context.Context, opt CreateOptions) error {
 
 		HTTPEnabled: true,
 		Replicas:    1,
+		GPU:         opt.GPU,
 	}
 
 	if opt.Branch != "" {

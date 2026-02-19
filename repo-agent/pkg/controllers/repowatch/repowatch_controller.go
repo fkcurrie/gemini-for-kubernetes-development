@@ -420,7 +420,7 @@ func (r *Reconciler) reconcileReviews(ctx context.Context, repoWatch *reviewv1al
 		return err
 	}
 
-	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(ctx, repoWatch, explicitPRs, prs, sandboxList)
+	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(ctx, repoWatch, ghClient, explicitPRs, prs, sandboxList)
 
 	repoWatch.Status.ActiveSandboxCount = activeSandboxes
 	repoWatch.Status.ReviewSandboxes = watchedPRs
@@ -573,7 +573,7 @@ func (r *Reconciler) excludePRs(prs []*github.PullRequest, repoWatch *reviewv1al
 	return filteredPRs
 }
 
-func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, explicitPRs []*github.PullRequest, prs []*github.PullRequest, sandboxes *unstructured.UnstructuredList) ([]reviewv1alpha1.WatchedPR, []int, int) {
+func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, explicitPRs []*github.PullRequest, prs []*github.PullRequest, sandboxes *unstructured.UnstructuredList) ([]reviewv1alpha1.WatchedPR, []int, int) {
 	log := log.FromContext(ctx)
 
 	ownedSandboxes := getOwnedSandboxes(sandboxes.Items, repoWatch.UID)
@@ -661,7 +661,7 @@ func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoW
 			if prIsExplicit || (activeSandboxes < repoWatch.Spec.Review.MaxActiveSandboxes) &&
 				(repoWatch.Spec.Review.MaxSandboxes == 0 || totalSandboxes < repoWatch.Spec.Review.MaxSandboxes) {
 				log.Info("creating sandbox for PR", "pr", *pr.Number)
-				if err := r.createReviewSandboxForPR(ctx, repoWatch, pr); err != nil {
+				if err := r.createReviewSandboxForPR(ctx, ghClient, repoWatch, pr); err != nil {
 					log.Error(err, "unable to create sandbox for PR", "pr", *pr.Number)
 				} else {
 					activeSandboxes++
@@ -873,8 +873,8 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 			issueIsExplicit := isIssueExplicit(*issue.Number, repoWatch.Spec.Issue.Issues)
 			if issueIsExplicit || (activeSandboxes < repoWatch.Spec.Issue.MaxActiveSandboxes &&
 				(repoWatch.Spec.Issue.MaxSandboxes == 0 || totalSandboxes < repoWatch.Spec.Issue.MaxSandboxes)) {
-				log.Info("creating sandbox for issue", "issue", *issue.Number)
-				createdSandbox, err := r.createIssueSandbox(ctx, user, repoWatch, issue)
+				log.Info("creating sandbox for issue", "issue", *issue)
+				createdSandbox, err := r.createIssueSandbox(ctx, ghClient, owner, repo, user, repoWatch, issue)
 				if err != nil {
 					log.Error(err, "unable to create sandbox for issue", "issue", *issue.Number)
 				} else {
@@ -974,10 +974,12 @@ func (r *Reconciler) isIssueMatch(issue *github.Issue, handler reviewv1alpha1.Is
 	return true
 }
 
-func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, issue *github.Issue) (*unstructured.Unstructured, error) {
+func (r *Reconciler) createIssueSandbox(ctx context.Context, ghClient *github.Client, owner, repo string, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, issue *github.Issue) (*unstructured.Unstructured, error) {
 	log := log.FromContext(ctx)
 	// Base name matches the issue identifier
 	name := fmt.Sprintf("%s-issue-%d", repoWatch.Name, *issue.Number)
+
+	gpu := (&pkg_github.Client{Client: ghClient}).NeedsGPU(ctx, owner, repo, "") // Use default branch
 
 	cloneURL := strings.Replace(*issue.RepositoryURL, "api.github.com/repos", "github.com", 1) + ".git"
 	repoParts := strings.Split(cloneURL, "/")
@@ -1068,6 +1070,7 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			ConfigDirImage:        r.ConfigDirImage,
 			HTTPEnabled:           true,
 			Replicas:              1,
+			GPU:                   gpu,
 			ServiceAccountName:    "issue-sandbox",
 		},
 		DindSupport: repoWatch.Spec.Issue.DindSupport,
@@ -1168,9 +1171,11 @@ func (r *Reconciler) generateIssueHandlerPrompt(handler reviewv1alpha1.IssueHand
 // createReviewSandboxForPR creates a ReviewSandbox for a pull request.
 // It uses the LLM configuration from the RepoWatch CRD to configure the
 // sandbox.
-func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, pr *github.PullRequest) error {
+func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, ghClient *github.Client, repoWatch *reviewv1alpha1.RepoWatch, pr *github.PullRequest) error {
 	log := log.FromContext(ctx)
 	sandboxName := fmt.Sprintf("%s-pr-%d", repoWatch.Name, *pr.Number)
+
+	gpu := (&pkg_github.Client{Client: ghClient}).NeedsGPU(ctx, pr.Head.Repo.GetOwner().GetLogin(), pr.Head.Repo.GetName(), pr.Head.GetRef())
 
 	prompt := repoWatch.Spec.Review.LLM.Prompt
 
@@ -1217,6 +1222,14 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, repoWatch *re
 					},
 					"spec": map[string]interface{}{
 						"serviceAccountName": "review-sandbox",
+						"nodeSelector": func() map[string]interface{} {
+							if gpu {
+								return map[string]interface{}{
+									"cloud.google.com/gke-gpu-sharing-strategy": "time-sharing",
+								}
+							}
+							return nil
+						}(),
 						"initContainers": []interface{}{
 							map[string]interface{}{
 								"name":  "gemini-configs",
@@ -1257,9 +1270,15 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, repoWatch *re
 									return []interface{}{}
 								}(),
 								"resources": map[string]interface{}{
-									"limits": map[string]interface{}{
-										"ephemeral-storage": "6Gi",
-									},
+									"limits": func() map[string]interface{} {
+										limits := map[string]interface{}{
+											"ephemeral-storage": "6Gi",
+										}
+										if gpu {
+											limits["nvidia.com/gpu"] = "1"
+										}
+										return limits
+									}(),
 									"requests": map[string]interface{}{
 										"ephemeral-storage": "6Gi",
 									},
@@ -1495,7 +1514,7 @@ func (r *Reconciler) reconcileDevSandboxes(ctx context.Context, user *github.Use
 		return err
 	}
 
-	watchedDevSandboxes, pendingDevBranches, err := r.reconcileDevSandboxesInternal(ctx, user, repoWatch, branches, forkOwner, forkRepo)
+	watchedDevSandboxes, pendingDevBranches, err := r.reconcileDevSandboxesInternal(ctx, ghClient, user, repoWatch, branches, forkOwner, forkRepo)
 	if err != nil {
 		return err
 	}
@@ -1601,7 +1620,7 @@ func (r *Reconciler) getDevCandidateBranches(ctx context.Context, ghClient *gith
 	return sortedBranches, nil
 }
 
-func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, branches []*github.Branch, forkOwner, forkRepo string) ([]reviewv1alpha1.DevSandbox, []string, error) {
+func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, ghClient *github.Client, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, branches []*github.Branch, forkOwner, forkRepo string) ([]reviewv1alpha1.DevSandbox, []string, error) {
 	log := log.FromContext(ctx)
 	// 6. List Existing DevSandboxes
 	sandboxList := &unstructured.UnstructuredList{}
@@ -1701,7 +1720,7 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 
 		if activeSandboxes < repoWatch.Spec.Dev.MaxActiveSandboxes && (repoWatch.Spec.Dev.MaxSandboxes == 0 || len(watchedDevSandboxes) < repoWatch.Spec.Dev.MaxSandboxes) {
 			log.Info("creating dev sandbox", "branch", branchName)
-			if err := r.createDevSandbox(ctx, user, repoWatch, forkOwner, forkRepo, branchName, sandboxName); err != nil {
+			if err := r.createDevSandbox(ctx, ghClient, user, repoWatch, forkOwner, forkRepo, branchName, sandboxName); err != nil {
 				log.Error(err, "creating dev sandbox", "branch", branchName)
 			} else {
 				activeSandboxes++
@@ -1719,9 +1738,11 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 	return watchedDevSandboxes, pendingDevBranches, nil
 }
 
-func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, forkOwner, forkRepo, branchName, sandboxName string) error {
+func (r *Reconciler) createDevSandbox(ctx context.Context, ghClient *github.Client, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, forkOwner, forkRepo, branchName, sandboxName string) error {
 	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", forkOwner, forkRepo)
 	originURL := fmt.Sprintf("github.com/%s/%s.git", forkOwner, forkRepo)
+
+	gpu := (&pkg_github.Client{Client: ghClient}).NeedsGPU(ctx, forkOwner, forkRepo, branchName)
 
 	opts := sandbox.DevSandboxOptions{
 		Name:      sandboxName,
@@ -1751,6 +1772,7 @@ func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, re
 
 		HTTPEnabled:        true,
 		Replicas:           1,
+		GPU:                gpu,
 		ServiceAccountName: "issue-sandbox",
 		DindSupport:        repoWatch.Spec.Dev.DindSupport,
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/clients"
 	githubv39 "github.com/google/go-github/v39/github"
+	"sigs.k8s.io/yaml"
 )
 
 // GetGithubToken retrieves the GitHub token from environment variables or the gh CLI.
@@ -57,6 +58,38 @@ func NewClient(ctx context.Context) (*Client, error) {
 // Client is a wrapper around the github.Client.
 type Client struct {
 	*githubv39.Client
+}
+
+// NeedsGPU checks if the repository at the given ref requires a GPU
+// based on .devcontainer/devcontainer.json hostRequirements.
+func (c *Client) NeedsGPU(ctx context.Context, owner, repo, ref string) bool {
+	opts := &githubv39.RepositoryContentGetOptions{}
+	if ref != "" {
+		opts.Ref = ref
+	}
+
+	fileContent, _, _, err := c.Client.Repositories.GetContents(ctx, owner, repo, ".devcontainer/devcontainer.json", opts)
+	if err != nil {
+		return false
+	}
+	content, err := fileContent.GetContent()
+	if err != nil {
+		return false
+	}
+
+	// Parse JSON
+	var config struct {
+		HostRequirements struct {
+			GPU bool `json:"gpu"`
+		} `json:"hostRequirements"`
+	}
+
+	// sigs.k8s.io/yaml handles JSON too and is often better with comments
+	if err := yaml.Unmarshal([]byte(content), &config); err != nil {
+		return false
+	}
+
+	return config.HostRequirements.GPU
 }
 
 // parseIssueURL extracts owner, repo, and issue number from a GitHub issue URL.

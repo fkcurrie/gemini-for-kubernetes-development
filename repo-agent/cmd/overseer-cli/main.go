@@ -146,7 +146,7 @@ func runIssue(ctx context.Context, number int, taskType string) error {
 		if strings.Contains(err.Error(), "not found") {
 			// Create Sandbox
 			fmt.Printf("Creating sandbox %s...\n", sandboxName)
-			if err := createIssueSandbox(ctx, kubeClient, &repoWatch, issue); err != nil {
+			if err := createIssueSandbox(ctx, ghClient, owner, repo, kubeClient, &repoWatch, issue); err != nil {
 				return fmt.Errorf("failed to create issue sandbox: %w", err)
 			}
 		} else {
@@ -243,7 +243,7 @@ func runPR(ctx context.Context, number int, taskType string) error {
 		if strings.Contains(err.Error(), "not found") {
 			// Create Sandbox
 			fmt.Printf("Creating sandbox %s...\n", sandboxName)
-			if err := createPRSandbox(ctx, kubeClient, &repoWatch, pr); err != nil {
+			if err := createPRSandbox(ctx, ghClient, kubeClient, &repoWatch, pr); err != nil {
 				return fmt.Errorf("failed to create PR sandbox: %w", err)
 			}
 		} else {
@@ -286,10 +286,12 @@ func parseRepoURL(url string) (string, string, error) {
 	return parts[len(parts)-2], parts[len(parts)-1], nil
 }
 
-func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, repoWatch *reviewv1alpha1.RepoWatch, issue *githubv39.Issue) error {
+func createIssueSandbox(ctx context.Context, ghClient *github.Client, owner, repo string, kubeClient *clients.KubernetesClient, repoWatch *reviewv1alpha1.RepoWatch, issue *githubv39.Issue) error {
 	// Replicate logic from repowatch_controller.go:createIssueSandbox
 	name := fmt.Sprintf("%s-issue-%d", repoWatch.Name, issue.GetNumber())
 	cloneURL := strings.Replace(issue.GetRepositoryURL(), "api.github.com/repos", "github.com", 1) + ".git"
+
+	gpu := ghClient.NeedsGPU(ctx, owner, repo, "")
 
 	// We need to fetch user info. In Overseer, we might just use env vars.
 	userLogin := os.Getenv("GITHUB_USER_ID")
@@ -330,6 +332,7 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 			ConfigDirImage:        os.Getenv("CONFIG_DIR_IMAGE"),
 			HTTPEnabled:           true,
 			Replicas:              1,
+			GPU:                   gpu,
 			ServiceAccountName:    "issue-sandbox",
 		},
 		IssueID:    fmt.Sprintf("%d", issue.GetNumber()),
@@ -348,10 +351,12 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 	return err
 }
 
-func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, repoWatch *reviewv1alpha1.RepoWatch, pr *githubv39.PullRequest) error {
+func createPRSandbox(ctx context.Context, ghClient *github.Client, kubeClient *clients.KubernetesClient, repoWatch *reviewv1alpha1.RepoWatch, pr *githubv39.PullRequest) error {
 	// Replicate logic from repowatch_controller.go:createPRSandbox
 	name := fmt.Sprintf("%s-pr-%d", repoWatch.Name, pr.GetNumber())
 	cloneURL := pr.GetBase().GetRepo().GetCloneURL()
+
+	gpu := ghClient.NeedsGPU(ctx, pr.GetHead().GetRepo().GetOwner().GetLogin(), pr.GetHead().GetRepo().GetName(), pr.GetHead().GetRef())
 
 	userLogin := os.Getenv("GITHUB_USER_ID")
 	userName := os.Getenv("GITHUB_USER_NAME")
@@ -389,6 +394,7 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 			ConfigDirImage:        os.Getenv("CONFIG_DIR_IMAGE"),
 			HTTPEnabled:           true,
 			Replicas:              1,
+			GPU:                   gpu,
 			ServiceAccountName:    "review-sandbox",
 		},
 		IssueID:    fmt.Sprintf("%d", pr.GetNumber()),
