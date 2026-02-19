@@ -85,6 +85,13 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 		resources.Limits["ephemeral-storage"] = resource.MustParse(size)
 	}
 
+	if opt.GPU {
+		if resources.Limits == nil {
+			resources.Limits = make(corev1.ResourceList)
+		}
+		resources.Limits["nvidia.com/gpu"] = resource.MustParse("1")
+	}
+
 	labels := make(map[string]string)
 	for k, v := range opt.Labels {
 		labels[k] = v
@@ -191,9 +198,6 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 	opt.Annotations["sandbox.gemini.google.com/branch"] = opt.Branch
 	opt.Annotations["sandbox.gemini.google.com/push-enabled"] = strconv.FormatBool(opt.PushEnabled)
 
-	ephemeralRequest := resources.Requests["ephemeral-storage"]
-	ephemeralLimit := resources.Limits["ephemeral-storage"]
-
 	labelsInterface := make(map[string]interface{}, len(labels))
 	for k, v := range labels {
 		labelsInterface[k] = v
@@ -223,6 +227,14 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 					},
 					"spec": map[string]interface{}{
 						"serviceAccountName": opt.ServiceAccountName,
+						"nodeSelector": func() map[string]interface{} {
+							if opt.GPU {
+								return map[string]interface{}{
+									"cloud.google.com/gke-gpu-sharing-strategy": "time-sharing",
+								}
+							}
+							return nil
+						}(),
 						"runtimeClassName": func() interface{} {
 							if opt.DindSupport == DindSupportGvisor {
 								return "gvisor"
@@ -280,16 +292,20 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 									return sc
 								}(),
 								"resources": map[string]interface{}{
-									"requests": map[string]interface{}{
-										"cpu":               resources.Requests.Cpu().String(),
-										"memory":            resources.Requests.Memory().String(),
-										"ephemeral-storage": ephemeralRequest.String(),
-									},
-									"limits": map[string]interface{}{
-										"cpu":               resources.Limits.Cpu().String(),
-										"memory":            resources.Limits.Memory().String(),
-										"ephemeral-storage": ephemeralLimit.String(),
-									},
+									"requests": func() map[string]interface{} {
+										m := make(map[string]interface{})
+										for k, v := range resources.Requests {
+											m[string(k)] = v.String()
+										}
+										return m
+									}(),
+									"limits": func() map[string]interface{} {
+										m := make(map[string]interface{})
+										for k, v := range resources.Limits {
+											m[string(k)] = v.String()
+										}
+										return m
+									}(),
 								},
 								"env": env,
 								"volumeMounts": func() []interface{} {

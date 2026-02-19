@@ -172,3 +172,34 @@ func TestNewAgentSandbox(t *testing.T) {
 		})
 	}
 }
+
+func TestNewAgentSandboxGPU(t *testing.T) {
+	opt := AgentSandboxOptions{
+		DevSandboxOptions: DevSandboxOptions{
+			Name:      "test-gpu",
+			Namespace: "default",
+			GPU:       true,
+		},
+	}
+	sandbox, _ := NewAgentSandbox(opt)
+
+	spec := sandbox.Object["spec"].(map[string]interface{})
+	podTemplate := spec["podTemplate"].(map[string]interface{})
+	podSpec := podTemplate["spec"].(map[string]interface{})
+
+	// Check nodeSelector
+	nodeSelector := podSpec["nodeSelector"].(map[string]interface{})
+	if nodeSelector["cloud.google.com/gke-gpu-sharing-strategy"] != "time-sharing" {
+		t.Errorf("expected nodeSelector time-sharing, got %v", nodeSelector["cloud.google.com/gke-gpu-sharing-strategy"])
+	}
+
+	// Check container resources
+	containers := podSpec["containers"].([]interface{})
+	container := containers[0].(map[string]interface{})
+	resources := container["resources"].(map[string]interface{})
+	limits := resources["limits"].(map[string]interface{})
+
+	if limits["nvidia.com/gpu"] != "1" {
+		t.Errorf("expected nvidia.com/gpu limit 1, got %v", limits["nvidia.com/gpu"])
+	}
+}

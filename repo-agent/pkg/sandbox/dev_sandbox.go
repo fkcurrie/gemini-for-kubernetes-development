@@ -49,6 +49,8 @@ type DevSandboxOptions struct {
 	// Scaling
 	Replicas int64
 
+	GPU bool
+
 	DindSupport string
 
 	// Idea Exploration
