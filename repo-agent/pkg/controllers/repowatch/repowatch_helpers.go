@@ -109,8 +109,8 @@ func getOwnedSandboxes(sandboxes []unstructured.Unstructured, ownerUID types.UID
 	return ownedSandboxes
 }
 
-// getOwnedIssueSandboxes filters a slice of sandboxes and returns only those owned by the specified UID and handler name.
-func getOwnedIssueSandboxes(sandboxes []unstructured.Unstructured, ownerUID types.UID, handlerName string) []unstructured.Unstructured {
+// GetOwnedIssueSandboxes filters a slice of sandboxes and returns only those owned by the specified UID and handler name.
+func GetOwnedIssueSandboxes(sandboxes []unstructured.Unstructured, ownerUID types.UID, handlerName string) []unstructured.Unstructured {
 	var ownedSandboxes []unstructured.Unstructured
 	for _, sandbox := range sandboxes {
 		isOwned := false

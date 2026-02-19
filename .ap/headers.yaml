@@ -1,0 +1,19 @@
+license: apache-2.0
+copyrightHolder: Google LLC
+skip:
+  - ".github/"
+  - "commands/"
+  - "dev/"
+  - "devcontainer-features/"
+  - "repo-agent/"
+  - "skills/"
+  - ".gitignore"
+  - "gemini-extension.json"
+  - "GEMINI-FOR-KUBERNETES-DEVELOPMENT.md"
+  - "go.mod"
+  - "go.sum"
+  - "go.work"
+  - "go.work.sum"
+  - "LICENSE"
+  - "README.md"
+  - ".ap/"

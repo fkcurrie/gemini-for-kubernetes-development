@@ -337,7 +337,7 @@ func TestGetOwnedIssueSandboxes_Comprehensive(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
-			ownedSandboxes := getOwnedIssueSandboxes(tc.sandboxes, ownerUID, handlerName)
+			ownedSandboxes := GetOwnedIssueSandboxes(tc.sandboxes, ownerUID, handlerName)
 			g.Expect(len(ownedSandboxes)).To(gomega.Equal(tc.expectedCount))
 
 			if tc.expectedCount > 0 {
