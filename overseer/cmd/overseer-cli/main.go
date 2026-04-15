@@ -290,16 +290,16 @@ func runChore(ctx context.Context, name string, file string) error {
 
 	isPaused := strings.EqualFold(chore.Schedule, "never")
 	if !isChoreAllowed(overseer.Spec.Chores, chore.Name) || isPaused {
-	        reason := "excluded or not included"
-	        if isPaused {
-	                reason = "paused (schedule: never)"
-	        }
-	        if isDryRun {
-	                klog.Infof("[dryrun] Chore %s is %s. Would delete sandbox %s and its service if it exists", chore.Name, reason, sandboxName)
-	                return nil
-	        }
-	        klog.Infof("Chore %s is %s. Ensuring sandbox is deleted.", chore.Name, reason)
-	        return deleteSandbox(ctx, kubeClient, namespace, sandboxName)
+		reason := "excluded or not included"
+		if isPaused {
+			reason = "paused (schedule: never)"
+		}
+		if isDryRun {
+			klog.Infof("[dryrun] Chore %s is %s. Would delete sandbox %s and its service if it exists", chore.Name, reason, sandboxName)
+			return nil
+		}
+		klog.Infof("Chore %s is %s. Ensuring sandbox is deleted.", chore.Name, reason)
+		return deleteSandbox(ctx, kubeClient, namespace, sandboxName)
 	}
 	if isDryRun {
 		klog.Infof("[dryrun] Would create sandbox and task for chore %s in Overseer %s", chore.Name, overseerName)
@@ -1125,7 +1125,7 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 			Labels: map[string]string{
 				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
 				"sandbox.gemini.google.com/type":    "review",
-				"pr.gemini.google.com/number":        fmt.Sprintf("%d", pr.GetNumber()),
+				"pr.gemini.google.com/number":       fmt.Sprintf("%d", pr.GetNumber()),
 				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
 				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
 			},
@@ -1242,13 +1242,13 @@ func getOverseer(ctx context.Context, dynClient dynamic.Interface, name string) 
 func getIssueNumber(labels map[string]string, name string, overseerName string) int {
 	if numStr, ok := labels["issue.gemini.google.com/number"]; ok {
 		var num int
-		fmt.Sscanf(numStr, "%d", &num)
+		_, _ = fmt.Sscanf(numStr, "%d", &num)
 		return num
 	}
 	prefix := overseerName + "-issue-"
 	if strings.HasPrefix(name, prefix) {
 		var num int
-		fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num)
+		_, _ = fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num)
 		return num
 	}
 	return 0
@@ -1257,13 +1257,13 @@ func getIssueNumber(labels map[string]string, name string, overseerName string) 
 func getPRNumber(labels map[string]string, name string, overseerName string) int {
 	if numStr, ok := labels["pr.gemini.google.com/number"]; ok {
 		var num int
-		fmt.Sscanf(numStr, "%d", &num)
+		_, _ = fmt.Sscanf(numStr, "%d", &num)
 		return num
 	}
 	prefix := overseerName + "-pr-"
 	if strings.HasPrefix(name, prefix) {
 		var num int
-		fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num)
+		_, _ = fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num)
 		return num
 	}
 	return 0
