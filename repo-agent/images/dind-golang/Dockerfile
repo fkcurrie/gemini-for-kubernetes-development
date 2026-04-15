@@ -93,7 +93,11 @@ RUN curl -sSfL "https://github.com/kubernetes-sigs/kustomize/releases/download/k
 
 # Install code-server
 RUN curl -fsSL https://code-server.dev/install.sh | sh && \
-    code-server --install-extension golang.go --install-extension vscodevim.vim
+    for i in 1 2 3 4 5; do \
+        code-server --install-extension golang.go --install-extension vscodevim.vim && break || \
+        if [ $i -eq 5 ]; then exit 1; fi; \
+        sleep 5; \
+    done
 
 # -------- Install Go tools --------
 # Install yq

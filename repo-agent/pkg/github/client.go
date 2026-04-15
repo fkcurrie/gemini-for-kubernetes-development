@@ -54,6 +54,17 @@ func NewClient(ctx context.Context) (*Client, error) {
 	}, nil
 }
 
+// IsNotFound returns true if the error is a 404 Not Found from GitHub.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if gerr, ok := err.(*githubv39.ErrorResponse); ok {
+		return gerr.Response != nil && gerr.Response.StatusCode == 404
+	}
+	return false
+}
+
 // Client is a wrapper around the github.Client.
 type Client struct {
 	*githubv39.Client
