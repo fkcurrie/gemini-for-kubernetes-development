@@ -1,11 +1,30 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package main
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +32,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/api/errors"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,6 +56,7 @@ import (
 var (
 	overseerName     string
 	namespace        string
+	dryRun           bool
 	IssueModelsOrder = []string{
 		"gemini-3-flash-preview",
 		"gemini-3.1-pro-preview",
@@ -55,6 +75,9 @@ func main() {
 		Use:   "overseer-cli",
 		Short: "CLI for Overseer to manage sandboxes and tasks",
 	}
+
+	rootCmd.PersistentFlags().AddGoFlagSet(flag.CommandLine)
+	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "Dry run: skip mutations and only log intent")
 
 	rootCmd.AddCommand(buildIssueCommand())
 	rootCmd.AddCommand(buildPRCommand())
@@ -77,8 +100,14 @@ func buildIssueCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "issue",
 		Short: "Create/ensure sandbox and task for an issue",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return runIssue(context.Background(), number, prNumber, taskType, prompt)
+		Long: `Create/ensure sandbox and task for an issue.
+
+This command is affected by the ISSUE_MODE environment variable:
+- enabled (default): Create/ensure sandbox and task
+- disabled: Skip execution
+- dryrun: Simulate execution without making any changes`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runIssue(cmd.Context(), number, prNumber, taskType, prompt)
 		},
 	}
 
@@ -99,8 +128,16 @@ func buildPRCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "pr",
 		Short: "Create/ensure sandbox and task for a PR",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return runPR(context.Background(), number, taskType, submit, prompt)
+		Long: `Create/ensure sandbox and task for a PR.
+
+This command is affected by the PR_MODE and REVIEW_MODE environment variables:
+- enabled (default): Create/ensure sandbox and task
+- disabled: Skip execution
+- dryrun: Simulate execution without making any changes
+
+PR_MODE is used by default. REVIEW_MODE is used if --submit is provided or if task type is "review".`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runPR(cmd.Context(), number, taskType, submit, prompt)
 		},
 	}
 
@@ -120,8 +157,14 @@ func buildChoreCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "chore",
 		Short: "Create/ensure sandbox and task for a chore",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return runChore(context.Background(), name, file)
+		Long: `Create/ensure sandbox and task for a chore.
+
+This command is affected by the CHORES_MODE environment variable:
+- enabled (default): Create/ensure sandbox and task
+- disabled: Skip execution
+- dryrun: Simulate execution without making any changes`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runChore(cmd.Context(), name, file)
 		},
 	}
 
@@ -135,11 +178,41 @@ func buildChoreCommand() *cobra.Command {
 func buildReconcileCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reconcile",
-		Short: "Reconcile chores: delete sandboxes for chores that are excluded or no longer present",
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return runReconcile(context.Background())
+		Args:  cobra.NoArgs,
+		Short: "Reconcile sandboxes: delete sandboxes for chores, issues or reviews that are disabled or no longer present",
+		Long: `Reconcile sandboxes: delete sandboxes for chores, issues or reviews that are disabled or no longer present.
+
+This command is affected by the following environment variables:
+- CHORES_MODE: enabled (default), disabled, or dryrun
+- ISSUE_MODE: enabled (default), disabled, or dryrun
+- PR_MODE: enabled (default), disabled, or dryrun
+- REVIEW_MODE: enabled (default), disabled, or dryrun
+
+The modes are case-insensitive and support boolean equivalents (true/false, on/off, 1/0, etc.) 
+and various dry-run spellings (dry-run, dry_run, dry run).`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runReconcile(cmd.Context())
 		},
 	}
+	return cmd
+}
+
+func buildDeleteCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete sandboxes and related resources",
+	}
+
+	sandboxCmd := &cobra.Command{
+		Use:   "sandbox [name...]",
+		Short: "Delete one or more sandboxes and their associated resources (like the -lb service)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDeleteSandboxes(cmd.Context(), args)
+		},
+	}
+	cmd.AddCommand(sandboxCmd)
+
 	return cmd
 }
 
@@ -156,10 +229,19 @@ func runChore(ctx context.Context, name string, file string) error {
 		return fmt.Errorf("OVERSEER_NAME and NAMESPACE environment variables must be set")
 	}
 
-	choresMode := os.Getenv("CHORES_MODE")
+	choresMode := getMode("CHORES_MODE")
+	isDryRun := dryRun || choresMode == "dryrun"
 	if choresMode == "disabled" {
-		fmt.Printf("Chore handling is disabled (CHORES_MODE=disabled). Skipping.\n")
+		klog.Infof("Chore handling is disabled (CHORES_MODE=disabled). Skipping.")
 		return nil
+	}
+
+	// Validate GitHub token for non-dry-run chores that might need it
+	if !isDryRun && os.Getenv("GITHUB_TOKEN") == "" {
+		// Try to get token from gh CLI as a validation step
+		if _, err := github.GetGithubToken(ctx); err != nil {
+			return fmt.Errorf("GitHub token is required for chore execution: %w", err)
+		}
 	}
 
 	chore, err := parseChore(file)
@@ -204,33 +286,33 @@ func runChore(ctx context.Context, name string, file string) error {
 		return fmt.Errorf("failed to convert Overseer: %w", err)
 	}
 
-	sandboxName := fmt.Sprintf("chore-%s-%s", overseer.Name, slugify(chore.Name))
+	sandboxName := fmt.Sprintf("chore-%s-%s", overseer.Name, k8s.Slugify(chore.Name))
 
-	isAllowed := isChoreAllowed(overseer.Spec.Chores, chore.Name)
 	isPaused := strings.EqualFold(chore.Schedule, "never")
-
-	if !isAllowed || isPaused {
-		var reasons []string
-		if !isAllowed {
-			reasons = append(reasons, "excluded by configuration")
-		}
-		if isPaused {
-			reasons = append(reasons, "paused (schedule: never)")
-		}
-		reason := strings.Join(reasons, " and ")
-
-		if choresMode == "dryrun" {
-			fmt.Printf("[dryrun] Ensuring sandbox %s is deleted for chore %s (%s)\n", sandboxName, chore.Name, reason)
-			_ = deleteSandbox(ctx, kubeClient, namespace, sandboxName)
-			return nil
-		}
-		fmt.Printf("Chore %s %s. Ensuring sandbox is deleted.\n", chore.Name, reason)
-		return deleteSandbox(ctx, kubeClient, namespace, sandboxName)
+	if !isChoreAllowed(overseer.Spec.Chores, chore.Name) || isPaused {
+	        reason := "excluded or not included"
+	        if isPaused {
+	                reason = "paused (schedule: never)"
+	        }
+	        if isDryRun {
+	                klog.Infof("[dryrun] Chore %s is %s. Would delete sandbox %s and its service if it exists", chore.Name, reason, sandboxName)
+	                return nil
+	        }
+	        klog.Infof("Chore %s is %s. Ensuring sandbox is deleted.", chore.Name, reason)
+	        return deleteSandbox(ctx, kubeClient, namespace, sandboxName)
+	}
+	if isDryRun {
+		klog.Infof("[dryrun] Would create sandbox and task for chore %s in Overseer %s", chore.Name, overseerName)
+		return nil
 	}
 
-	if choresMode == "dryrun" {
-		fmt.Printf("[dryrun] Would create sandbox and task chore for chore %s in Overseer %s\n", chore.Name, overseerName)
-		return nil
+	ghClient, err := github.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create github client: %w", err)
+	}
+
+	if err := ensureGitHubUser(ctx, ghClient); err != nil {
+		return err
 	}
 
 	owner, repo, err := parseRepoURL(overseer.Spec.RepoURL)
@@ -241,9 +323,9 @@ func runChore(ctx context.Context, name string, file string) error {
 	// Check if sandbox exists
 	_, err = kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Get(ctx, sandboxName, metav1.GetOptions{})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if kerrors.IsNotFound(err) {
 			// Create Sandbox
-			fmt.Printf("Creating sandbox %s...\n", sandboxName)
+			klog.Infof("Creating sandbox %s...", sandboxName)
 			if err := createChoreSandbox(ctx, kubeClient, &overseer, chore, sandboxName); err != nil {
 				return fmt.Errorf("failed to create chore sandbox: %w", err)
 			}
@@ -254,7 +336,7 @@ func runChore(ctx context.Context, name string, file string) error {
 
 	// Create Task
 	taskType := "chore"
-	fmt.Printf("Creating task %s for sandbox %s...\n", taskType, sandboxName)
+	klog.Infof("Creating task %s for sandbox %s...", taskType, sandboxName)
 	params := map[string]string{
 		"AGENT_PROMPT": chore.Prompt,
 		"CHORE_NAME":   chore.Name,
@@ -272,9 +354,13 @@ func runChore(ctx context.Context, name string, file string) error {
 		return fmt.Errorf("failed to create sandbox task: %w", err)
 	}
 
-	fmt.Println("Done.")
+	klog.Infof("Done.")
 	return nil
 }
+
+var (
+	ErrMissingFrontmatter = errors.New("missing frontmatter")
+)
 
 func parseChore(path string) (*ChoreDefinition, error) {
 	data, err := os.ReadFile(path)
@@ -284,7 +370,7 @@ func parseChore(path string) (*ChoreDefinition, error) {
 
 	parts := strings.SplitN(string(data), "---", 3)
 	if len(parts) < 3 {
-		return nil, fmt.Errorf("invalid chore format in %s: missing frontmatter", path)
+		return nil, ErrMissingFrontmatter
 	}
 
 	var chore ChoreDefinition
@@ -296,20 +382,8 @@ func parseChore(path string) (*ChoreDefinition, error) {
 	return &chore, nil
 }
 
-func slugify(s string) string {
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, " ", "-")
-	var res strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			res.WriteRune(r)
-		}
-	}
-	return res.String()
-}
-
 func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, overseer *overseerv1alpha1.Overseer, chore *ChoreDefinition, sandboxName string) error {
-	cloneURL := overseer.Spec.RepoURL
+	cloneURL := strings.TrimRight(overseer.Spec.RepoURL, "/")
 	if !strings.HasSuffix(cloneURL, ".git") {
 		cloneURL += ".git"
 	}
@@ -318,17 +392,6 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 	if err != nil {
 		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
-
-	userLogin := os.Getenv("GITHUB_USER_ID")
-	userName := os.Getenv("GITHUB_USER_NAME")
-	if userName == "" {
-		userName = userLogin
-	}
-	userEmail := os.Getenv("GITHUB_USER_EMAIL")
-
-	botLogin := os.Getenv("GITHUB_BOT_LOGIN")
-	botName := os.Getenv("GITHUB_BOT_NAME")
-	botEmail := os.Getenv("GITHUB_BOT_EMAIL")
 
 	apiKeySecretName := overseer.Spec.GeminiAPIKeySecretName
 	if apiKeySecretName == "" {
@@ -339,7 +402,7 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 
 	scriptToken, err := getTokenFromScript()
 	if err != nil {
-		fmt.Printf("Warning: failed to get token from script: %v\n", err)
+		klog.Warningf("failed to get token from script: %v", err)
 	}
 
 	opt := sandbox.AgentSandboxOptions{
@@ -347,21 +410,23 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 			Name:      sandboxName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/overseer": overseer.Name,
+				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
 				"sandbox.gemini.google.com/type":    "chore",
-				"chore.gemini.google.com/name":      slugify(chore.Name),
+				"chore.gemini.google.com/name":      k8s.TruncateLabel(k8s.Slugify(chore.Name)),
+				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(sandboxName),
+				"sandbox":                           k8s.TruncateLabel(sandboxName), // Legacy support
 			},
 			CloneURL:            cloneURL,
 			HTMLURL:             strings.TrimSuffix(overseer.Spec.RepoURL, ".git"),
 			Branch:              "main", // Default branch for chores
-			Origin:              fmt.Sprintf("github.com/%s/%s", userLogin, repo),
+			Origin:              fmt.Sprintf("github.com/%s/%s", githubUserLogin, repo),
 			PushEnabled:         true,
-			UserLogin:           userLogin,
-			UserName:            userName,
-			UserEmail:           userEmail,
-			BotLogin:            botLogin,
-			BotName:             botName,
-			BotEmail:            botEmail,
+			UserLogin:           githubUserLogin,
+			UserName:            githubUserName,
+			UserEmail:           githubUserEmail,
+			BotLogin:            githubBotLogin,
+			BotName:             githubBotName,
+			BotEmail:            githubBotEmail,
 			LLMAPIKeySecretName: apiKeySecretName,
 			GithubSecretName:    githubSecretName,
 			LLMAPIKey:           scriptToken,
@@ -383,6 +448,12 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 	sb, svc := sandbox.NewAgentSandbox(opt)
 	sb.SetName(sandboxName)
 
+	if svc.Labels == nil {
+		svc.Labels = make(map[string]string)
+	}
+	svc.Labels["sandbox.gemini.google.com/name"] = k8s.TruncateLabel(sandboxName)
+	svc.Labels["sandbox"] = k8s.TruncateLabel(sandboxName) // Legacy support
+
 	_, err = kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Create(ctx, sb, metav1.CreateOptions{})
 	if err != nil {
 		return err
@@ -397,17 +468,10 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		return fmt.Errorf("OVERSEER_NAME and NAMESPACE environment variables must be set")
 	}
 
-	issueMode := os.Getenv("ISSUE_MODE")
+	issueMode := getMode("ISSUE_MODE")
+	isDryRun := dryRun || issueMode == "dryrun"
 	if issueMode == "disabled" {
-		fmt.Printf("Issue handling is disabled (ISSUE_MODE=disabled). Skipping.\n")
-		return nil
-	}
-	if issueMode == "dryrun" {
-		if number != 0 {
-			fmt.Printf("[dryrun] Would create/ensure sandbox and task %s for issue %d in Overseer %s\n", taskType, number, overseerName)
-		} else if prNumber != 0 {
-			fmt.Printf("[dryrun] Would create/ensure sandbox and task %s for issue from PR %d in Overseer %s\n", taskType, prNumber, overseerName)
-		}
+		klog.Infof("Issue handling is disabled (ISSUE_MODE=disabled). Skipping.")
 		return nil
 	}
 
@@ -442,32 +506,45 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		return fmt.Errorf("failed to convert Overseer: %w", err)
 	}
 
-	ghClient, err := github.NewClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create github client: %w", err)
-	}
-
 	owner, repo, err := parseRepoURL(overseer.Spec.RepoURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
 
 	if number == 0 && prNumber != 0 {
-		fmt.Printf("Resolving issue from PR %d...\n", prNumber)
+		if isDryRun {
+			klog.Infof("[dryrun] Would resolve issue from PR %d and create/ensure sandbox and task %s in Overseer %s", prNumber, taskType, overseerName)
+			return nil
+		}
+		klog.Infof("Resolving issue from PR %d...", prNumber)
 		number, err = resolveIssueFromPR(ctx, owner, repo, prNumber)
 		if err != nil {
 			return fmt.Errorf("failed to resolve issue from PR: %w", err)
 		}
-		fmt.Printf("Resolved to issue %d\n", number)
+		klog.Infof("Resolved to issue %d", number)
 	}
 
 	if number == 0 {
 		return fmt.Errorf("either --number or --pr must be provided")
 	}
 
+	if isDryRun {
+		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for issue %d in Overseer %s", taskType, number, overseerName)
+		return nil
+	}
+
+	ghClient, err := github.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create github client: %w", err)
+	}
+
 	issue, _, err := ghClient.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
 		return fmt.Errorf("failed to get issue %d: %w", number, err)
+	}
+
+	if err := ensureGitHubUser(ctx, ghClient); err != nil {
+		return err
 	}
 
 	sandboxName := fmt.Sprintf("%s-issue-%d", overseer.Name, number)
@@ -481,7 +558,7 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		if err == nil && (!found || replicas > 0) {
 			sandboxIsActive = true
 		}
-	} else if !strings.Contains(err.Error(), "not found") {
+	} else if !kerrors.IsNotFound(err) {
 		return fmt.Errorf("failed to check if sandbox exists: %w", err)
 	}
 
@@ -500,14 +577,14 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 
 	// Create Sandbox if it doesn't exist
 	if !sandboxExists {
-		fmt.Printf("Creating sandbox %s...\n", sandboxName)
+		klog.Infof("Creating sandbox %s...", sandboxName)
 		if err := createIssueSandbox(ctx, kubeClient, &overseer, issue); err != nil {
 			return fmt.Errorf("failed to create issue sandbox: %w", err)
 		}
 	}
 
 	// Create Task
-	fmt.Printf("Creating task %s for sandbox %s...\n", taskType, sandboxName)
+	klog.Infof("Creating task %s for sandbox %s...", taskType, sandboxName)
 	agentPrompt := customPrompt
 	if agentPrompt == "" {
 		agentPrompt = overseer.Spec.IssuePrompt
@@ -526,7 +603,7 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		return fmt.Errorf("failed to create sandbox task: %w", err)
 	}
 
-	fmt.Println("Done.")
+	klog.Infof("Done.")
 	return nil
 }
 
@@ -536,23 +613,15 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return fmt.Errorf("OVERSEER_NAME and NAMESPACE environment variables must be set")
 	}
 
-	mode := ""
-	modeName := ""
+	modeName := "PR_MODE"
 	if submit || taskType == "review" {
 		modeName = "REVIEW_MODE"
-		mode = os.Getenv(modeName)
-	} else {
-		modeName = "PR_MODE"
-		mode = os.Getenv(modeName)
 	}
+	mode := getMode(modeName)
+	isDryRun := dryRun || mode == "dryrun"
 
 	if mode == "disabled" {
-		fmt.Printf("PR/Review handling is disabled (%s=disabled). Skipping.\n", modeName)
-		return nil
-	}
-
-	if mode == "dryrun" {
-		fmt.Printf("[dryrun] Would create/ensure sandbox and task %s for PR %d in Overseer %s\n", taskType, number, overseerName)
+		klog.Infof("PR/Review handling is disabled (%s=disabled). Skipping.", modeName)
 		return nil
 	}
 
@@ -578,7 +647,11 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 	manager := k8s.NewManager(kubeClient)
 
 	if submit {
-		fmt.Printf("Submitting agent draft for PR %d...\n", number)
+		if isDryRun {
+			klog.Infof("[dryrun] Would submit agent draft for PR %d in Overseer %s", number, overseerName)
+			return nil
+		}
+		klog.Infof("Submitting agent draft for PR %d...", number)
 		return submitAgentDraft(ctx, manager, kubeClient, namespace, overseerName, number)
 	}
 
@@ -592,19 +665,28 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return fmt.Errorf("failed to convert Overseer: %w", err)
 	}
 
-	ghClient, err := github.NewClient(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to create github client: %w", err)
-	}
-
 	owner, repo, err := parseRepoURL(overseer.Spec.RepoURL)
 	if err != nil {
 		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
 
+	if isDryRun {
+		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for PR %d in Overseer %s", taskType, number, overseerName)
+		return nil
+	}
+
+	ghClient, err := github.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create github client: %w", err)
+	}
+
 	pr, _, err := ghClient.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
 		return fmt.Errorf("failed to get PR %d: %w", number, err)
+	}
+
+	if err := ensureGitHubUser(ctx, ghClient); err != nil {
+		return err
 	}
 
 	sandboxName := fmt.Sprintf("%s-pr-%d", overseer.Name, number)
@@ -619,7 +701,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		if err == nil && (!found || replicas > 0) {
 			sandboxIsActive = true
 		}
-	} else if !strings.Contains(err.Error(), "not found") {
+	} else if !kerrors.IsNotFound(err) {
 		return fmt.Errorf("failed to check if sandbox exists: %w", err)
 	}
 
@@ -643,7 +725,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 				task := &taskList.Items[i]
 				if task.Spec.Type == "review" && task.Spec.Params["HEAD_SHA"] == headSHA {
 					if task.Status.TaskState == "Completed" || task.Status.TaskState == "Running" || task.Status.TaskState == "Pending" {
-						fmt.Printf("Review task for SHA %s already exists in state %s. Skipping.\n", headSHA, task.Status.TaskState)
+						klog.Infof("Review task for SHA %s already exists in state %s. Skipping.", headSHA, task.Status.TaskState)
 						return nil
 					}
 				}
@@ -653,14 +735,14 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 
 	// Create Sandbox if it doesn't exist
 	if !sandboxExists {
-		fmt.Printf("Creating sandbox %s...\n", sandboxName)
+		klog.Infof("Creating sandbox %s...", sandboxName)
 		if err := createPRSandbox(ctx, kubeClient, &overseer, pr); err != nil {
 			return fmt.Errorf("failed to create PR sandbox: %w", err)
 		}
 	}
 
 	// Create Task
-	fmt.Printf("Creating task %s for sandbox %s...\n", taskType, sandboxName)
+	klog.Infof("Creating task %s for sandbox %s...", taskType, sandboxName)
 	agentPrompt := customPrompt
 	if agentPrompt == "" {
 		agentPrompt = overseer.Spec.Review.Prompt
@@ -678,7 +760,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return fmt.Errorf("failed to create sandbox task: %w", err)
 	}
 
-	fmt.Println("Done.")
+	klog.Infof("Done.")
 	return nil
 }
 
@@ -717,11 +799,11 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 		if annotations != nil {
 			if state, ok := annotations["reviewState"]; ok {
 				if state == "submitted" {
-					fmt.Printf("Review for PR %d already submitted (legacy).\n", prNumber)
+					klog.Infof("Review for PR %d already submitted (legacy).", prNumber)
 					return nil
 				}
 				if currentSHA != "" && state == "submitted:"+currentSHA {
-					fmt.Printf("Review for PR %d and SHA %s already submitted.\n", prNumber, currentSHA)
+					klog.Infof("Review for PR %d and SHA %s already submitted.", prNumber, currentSHA)
 					return nil
 				}
 			}
@@ -786,11 +868,10 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 	err = yaml.Unmarshal([]byte(draft), &agentOutput)
 	if err != nil || agentOutput.Review == nil {
 		if err != nil {
-			fmt.Printf("Warning: failed to unmarshal review payload as YAML, using as plain body: %v\n", err)
+			klog.Warningf("failed to unmarshal review payload as YAML, using as plain body: %v", err)
 		} else {
-			fmt.Printf("Warning: review field missing in YAML, using draft as plain body\n")
+			klog.Warningf("review field missing in YAML, using draft as plain body")
 		}
-
 		reviewRequest.Body = githubv39.String(draft)
 	} else {
 		reviewRequest = agentOutput.Review.ToGitHubReviewRequest()
@@ -799,12 +880,12 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 	// Set event to COMMENT to submit directly instead of creating a draft
 	reviewRequest.Event = githubv39.String("COMMENT")
 
-	fmt.Printf("Creating review on GitHub for %s/%s PR %d...\n", owner, repoName, prNumber)
+	klog.Infof("Creating review on GitHub for %s/%s PR %d...", owner, repoName, prNumber)
 	review, _, err := client.PullRequests.CreateReview(ctx, owner, repoName, prNumber, reviewRequest)
 	if err != nil {
 		return fmt.Errorf("failed to create review on GitHub: %w", err)
 	}
-	fmt.Printf("Successfully created review: %s\n", review.GetHTMLURL())
+	klog.Infof("Successfully created review: %s", review.GetHTMLURL())
 
 	// Update sandbox reviewState
 	reviewState := "submitted"
@@ -812,21 +893,123 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 		reviewState = "submitted:" + currentSHA
 	}
 	if err := manager.UpdateSandboxAnnotation(ctx, namespace, sandboxName, "reviewState", reviewState); err != nil {
-		fmt.Printf("Warning: failed to update reviewState annotation: %v\n", err)
+		klog.Warningf("failed to update reviewState annotation: %v", err)
 	}
 
-	fmt.Println("Done.")
+	klog.Infof("Done.")
 	return nil
 }
 
-func parseRepoURL(url string) (string, string, error) {
-	u := strings.TrimPrefix(url, "https://")
-	u = strings.TrimSuffix(u, ".git")
-	parts := strings.Split(u, "/")
-	if len(parts) < 3 {
-		return "", "", fmt.Errorf("invalid repo URL: %s", url)
+var (
+	githubUserLogin string
+	githubUserName  string
+	githubUserEmail string
+	githubBotLogin  string
+	githubBotName   string
+	githubBotEmail  string
+)
+
+func ensureGitHubUser(ctx context.Context, ghClient *github.Client) error {
+	githubBotLogin = os.Getenv("GITHUB_BOT_LOGIN")
+	githubBotName = os.Getenv("GITHUB_BOT_NAME")
+	githubBotEmail = os.Getenv("GITHUB_BOT_EMAIL")
+
+	if githubUserLogin != "" {
+		if githubUserEmail == "" {
+			githubUserEmail = githubUserLogin + "@users.noreply.github.com"
+		}
+		return nil
 	}
-	return parts[len(parts)-2], parts[len(parts)-1], nil
+	githubUserLogin = os.Getenv("GITHUB_USER_ID")
+	githubUserName = os.Getenv("GITHUB_USER_NAME")
+	githubUserEmail = os.Getenv("GITHUB_USER_EMAIL")
+
+	if githubUserLogin != "" {
+		if githubUserName == "" {
+			githubUserName = githubUserLogin
+		}
+		if githubUserEmail == "" {
+			githubUserEmail = githubUserLogin + "@users.noreply.github.com"
+		}
+		return nil
+	}
+
+	if dryRun {
+		klog.Infof("[dryrun] Skipping GitHub user info fetch. Using defaults.")
+		githubUserLogin = "dryrun-user"
+		githubUserName = "Dryrun User"
+		githubUserEmail = "dryrun@example.com"
+		return nil
+	}
+
+	user, _, err := ghClient.Users.Get(ctx, "")
+	if err != nil {
+		return fmt.Errorf("failed to fetch GitHub user info: %w", err)
+	}
+
+	githubUserLogin = user.GetLogin()
+	githubUserName = user.GetName()
+	if githubUserName == "" {
+		githubUserName = githubUserLogin
+	}
+	githubUserEmail = user.GetEmail()
+	if githubUserEmail == "" {
+		githubUserEmail = githubUserLogin + "@users.noreply.github.com"
+	}
+	return nil
+}
+
+func parseRepoURL(repoURL string) (string, string, error) {
+	// Handle SSH URLs like git@github.com:owner/repo or github.com:owner/repo
+	// Standard SSH detection: contains @ and : but no ://, OR strictly matching git@ prefix
+	isSSH := (strings.Contains(repoURL, "@") && strings.Contains(repoURL, ":") && !strings.Contains(repoURL, "://")) || strings.HasPrefix(repoURL, "git@")
+	if isSSH {
+		// Clean up common suffixes/separators before splitting
+		s := strings.SplitN(repoURL, "?", 2)[0]
+		s = strings.SplitN(s, "#", 2)[0]
+		s = strings.TrimRight(s, "/")
+		s = strings.TrimSuffix(s, ".git")
+
+		parts := strings.SplitN(s, ":", 2)
+		if len(parts) == 2 {
+			repoPath := parts[1]
+			pathParts := strings.Split(repoPath, "/")
+			if len(pathParts) >= 2 {
+				owner := strings.Join(pathParts[:len(pathParts)-1], "/")
+				repo := pathParts[len(pathParts)-1]
+				return owner, repo, nil
+			}
+		}
+	}
+
+	// Handle local paths
+	isLocal := strings.HasPrefix(repoURL, "/") || strings.HasPrefix(repoURL, "./") || strings.HasPrefix(repoURL, "../")
+	// Windows support: check if it's an absolute path (e.g., C:\...)
+	if !isLocal && filepath.IsAbs(repoURL) {
+		isLocal = true
+	}
+
+	uStr := repoURL
+	if !strings.Contains(uStr, "://") && !isLocal {
+		uStr = "https://" + uStr
+	}
+
+	u, err := url.Parse(uStr)
+	if err != nil {
+		return "", "", err
+	}
+
+	// For local paths, owner/repo might not be well-defined as per GitHub
+	// but we try to extract the last two components.
+	path := strings.Trim(u.Path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid repo URL path: %s", repoURL)
+	}
+
+	owner := strings.Join(parts[:len(parts)-1], "/")
+	return owner, parts[len(parts)-1], nil
 }
 
 func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, overseer *overseerv1alpha1.Overseer, issue *githubv39.Issue) error {
@@ -834,17 +1017,10 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 	name := fmt.Sprintf("%s-issue-%d", overseer.Name, issue.GetNumber())
 	cloneURL := strings.Replace(issue.GetRepositoryURL(), "api.github.com/repos", "github.com", 1) + ".git"
 
-	// We need to fetch user info. In Overseer, we might just use env vars.
-	userLogin := os.Getenv("GITHUB_USER_ID")
-	userName := os.Getenv("GITHUB_USER_NAME")
-	if userName == "" {
-		userName = userLogin
+	_, repo, err := parseRepoURL(overseer.Spec.RepoURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
-	userEmail := os.Getenv("GITHUB_USER_EMAIL")
-
-	botLogin := os.Getenv("GITHUB_BOT_LOGIN")
-	botName := os.Getenv("GITHUB_BOT_NAME")
-	botEmail := os.Getenv("GITHUB_BOT_EMAIL")
 
 	branchName := fmt.Sprintf("issue-%d-%s", issue.GetNumber(), randString(4))
 
@@ -857,7 +1033,7 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 
 	scriptToken, err := getTokenFromScript()
 	if err != nil {
-		fmt.Printf("Warning: failed to get token from script: %v\n", err)
+		klog.Warningf("failed to get token from script: %v", err)
 	}
 
 	opt := sandbox.AgentSandboxOptions{
@@ -865,20 +1041,23 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/overseer": overseer.Name,
+				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
 				"sandbox.gemini.google.com/type":    "issue",
+				"issue.gemini.google.com/number":    fmt.Sprintf("%d", issue.GetNumber()),
+				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
 			},
 			CloneURL:            cloneURL,
 			HTMLURL:             issue.GetHTMLURL(),
 			Branch:              branchName,
-			Origin:              fmt.Sprintf("github.com/%s/%s", userLogin, overseer.Name), // simplified
+			Origin:              fmt.Sprintf("github.com/%s/%s", githubUserLogin, repo),
 			PushEnabled:         false,
-			UserLogin:           userLogin,
-			UserName:            userName,
-			UserEmail:           userEmail,
-			BotLogin:            botLogin,
-			BotName:             botName,
-			BotEmail:            botEmail,
+			UserLogin:           githubUserLogin,
+			UserName:            githubUserName,
+			UserEmail:           githubUserEmail,
+			BotLogin:            githubBotLogin,
+			BotName:             githubBotName,
+			BotEmail:            githubBotEmail,
 			LLMProvider:         "gemini-cli",
 			LLMConfigdirRef:     overseer.Spec.ConfigdirRef,
 			LLMAPIKeySecretName: apiKeySecretName,
@@ -895,10 +1074,16 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 		},
 		IssueID:    fmt.Sprintf("%d", issue.GetNumber()),
 		IssueTitle: issue.GetTitle(),
-		IssueRepo:  overseer.Name,
+		IssueRepo:  repo,
 	}
 
 	sb, svc := sandbox.NewAgentSandbox(opt)
+
+	if svc.Labels == nil {
+		svc.Labels = make(map[string]string)
+	}
+	svc.Labels["sandbox.gemini.google.com/name"] = k8s.TruncateLabel(name)
+	svc.Labels["sandbox"] = k8s.TruncateLabel(name) // Legacy support
 
 	_, err = kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Create(ctx, sb, metav1.CreateOptions{})
 	if err != nil {
@@ -912,16 +1097,10 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, overseer *overseerv1alpha1.Overseer, pr *githubv39.PullRequest) error {
 	name := fmt.Sprintf("%s-pr-%d", overseer.Name, pr.GetNumber())
 
-	userLogin := os.Getenv("GITHUB_USER_ID")
-	userName := os.Getenv("GITHUB_USER_NAME")
-	if userName == "" {
-		userName = userLogin
+	_, repo, err := parseRepoURL(overseer.Spec.RepoURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
-	userEmail := os.Getenv("GITHUB_USER_EMAIL")
-
-	botLogin := os.Getenv("GITHUB_BOT_LOGIN")
-	botName := os.Getenv("GITHUB_BOT_NAME")
-	botEmail := os.Getenv("GITHUB_BOT_EMAIL")
 
 	apiKeySecretName := overseer.Spec.GeminiAPIKeySecretName
 	if apiKeySecretName == "" {
@@ -936,7 +1115,7 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 
 	scriptToken, err := getTokenFromScript()
 	if err != nil {
-		fmt.Printf("Warning: failed to get token from script: %v\n", err)
+		klog.Warningf("failed to get token from script: %v", err)
 	}
 
 	opt := sandbox.ReviewSandboxOptions{
@@ -944,15 +1123,18 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/overseer": overseer.Name,
+				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
 				"sandbox.gemini.google.com/type":    "review",
+				"pr.gemini.google.com/number":        fmt.Sprintf("%d", pr.GetNumber()),
+				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
 			},
-			UserLogin:             userLogin,
-			UserName:              userName,
-			UserEmail:             userEmail,
-			BotLogin:              botLogin,
-			BotName:               botName,
-			BotEmail:              botEmail,
+			UserLogin:             githubUserLogin,
+			UserName:              githubUserName,
+			UserEmail:             githubUserEmail,
+			BotLogin:              githubBotLogin,
+			BotName:               githubBotName,
+			BotEmail:              githubBotEmail,
 			LLMProvider:           "gemini-cli",
 			LLMConfigdirRef:       overseer.Spec.ConfigdirRef,
 			LLMAPIKeySecretName:   apiKeySecretName,
@@ -972,7 +1154,7 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 		PRHTMLURL:         pr.GetHTMLURL(),
 		PRDiffURL:         pr.GetDiffURL(),
 		PRCloneURL:        fmt.Sprintf("%s#refs/heads/%s", pr.GetHead().GetRepo().GetCloneURL(), pr.GetHead().GetRef()),
-		RepoName:          overseer.Name,
+		RepoName:          repo,
 		MaxReviewFiles:    maxReviewFiles,
 		IgnoreFiles:       overseer.Spec.Review.IgnoreFiles,
 		SeverityThreshold: overseer.Spec.Review.SeverityThreshold,
@@ -981,6 +1163,12 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 	}
 
 	sb, svc := sandbox.NewReviewSandbox(opt)
+	// Ensure the service has the sandbox label for robust cleanup via LabelSelector
+	if svc.Labels == nil {
+		svc.Labels = make(map[string]string)
+	}
+	svc.Labels["sandbox.gemini.google.com/name"] = k8s.TruncateLabel(name)
+	svc.Labels["sandbox"] = k8s.TruncateLabel(name) // Legacy support
 
 	_, err = kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Create(ctx, sb, metav1.CreateOptions{})
 	if err != nil {
@@ -1023,7 +1211,7 @@ func resolveIssueFromPR(ctx context.Context, owner, repo string, prNumber int) (
 }
 
 func countActiveSandboxes(ctx context.Context, dynClient dynamic.Interface, namespace, overseerName, sandboxType string) (int, error) {
-	labelSelector := fmt.Sprintf("review.gemini.google.com/overseer=%s,sandbox.gemini.google.com/type=%s", overseerName, sandboxType)
+	labelSelector := fmt.Sprintf("review.gemini.google.com/overseer=%s,sandbox.gemini.google.com/type=%s", k8s.TruncateLabel(overseerName), sandboxType)
 	listOptions := metav1.ListOptions{
 		LabelSelector: labelSelector,
 	}
@@ -1051,10 +1239,47 @@ func getOverseer(ctx context.Context, dynClient dynamic.Interface, name string) 
 	return dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 }
 
+func getIssueNumber(labels map[string]string, name string, overseerName string) int {
+	if numStr, ok := labels["issue.gemini.google.com/number"]; ok {
+		var num int
+		fmt.Sscanf(numStr, "%d", &num)
+		return num
+	}
+	prefix := overseerName + "-issue-"
+	if strings.HasPrefix(name, prefix) {
+		var num int
+		fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num)
+		return num
+	}
+	return 0
+}
+
+func getPRNumber(labels map[string]string, name string, overseerName string) int {
+	if numStr, ok := labels["pr.gemini.google.com/number"]; ok {
+		var num int
+		fmt.Sscanf(numStr, "%d", &num)
+		return num
+	}
+	prefix := overseerName + "-pr-"
+	if strings.HasPrefix(name, prefix) {
+		var num int
+		fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num)
+		return num
+	}
+	return 0
+}
+
 func runReconcile(ctx context.Context) error {
 	if overseerName == "" || namespace == "" {
 		return fmt.Errorf("OVERSEER_NAME and NAMESPACE environment variables must be set")
 	}
+
+	choresMode := getMode("CHORES_MODE")
+	issueMode := getMode("ISSUE_MODE")
+	prMode := getMode("PR_MODE")
+	reviewMode := getMode("REVIEW_MODE")
+
+	klog.V(2).Infof("Modes status: CHORES_MODE=%s, ISSUE_MODE=%s, PR_MODE=%s, REVIEW_MODE=%s", choresMode, issueMode, prMode, reviewMode)
 
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -1086,65 +1311,228 @@ func runReconcile(ctx context.Context) error {
 		return fmt.Errorf("failed to convert Overseer: %w", err)
 	}
 
+	owner, repo, err := parseRepoURL(overseer.Spec.RepoURL)
+	var ghClient *github.Client
+	if err == nil && owner != "" && repo != "" {
+		// Only create GitHub client if we might need it for individual status checks
+		if issueMode != "disabled" || prMode != "disabled" || reviewMode != "disabled" {
+			ghClient, _ = github.NewClient(ctx)
+		}
+	}
+
 	// 1. Get current chores in .agents/
 	currentChores := make(map[string]bool)
 	pausedChores := make(map[string]bool)
-	choresMode := os.Getenv("CHORES_MODE")
-	if choresMode != "disabled" && choresMode != "dryrun" {
-		files, err := os.ReadDir(".agents")
-		if err == nil {
-			for _, f := range files {
-				if f.IsDir() {
-					continue
+	choresReadSuccessful := false
+	if choresMode != "disabled" {
+		err := filepath.WalkDir(".agents", func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			lowerName := strings.ToLower(d.Name())
+			if strings.HasSuffix(lowerName, ".yaml") || strings.HasSuffix(lowerName, ".yml") {
+				chore, err := parseChore(path)
+				if err != nil {
+					// If it's a file without frontmatter, it might just be documentation.
+					if errors.Is(err, ErrMissingFrontmatter) {
+						klog.V(4).Infof("Skipping non-chore file %s: %v", path, err)
+						return nil
+					}
+					return fmt.Errorf("failed to parse chore file %s: %w", path, err)
 				}
-				if strings.HasSuffix(f.Name(), ".yaml") || strings.HasSuffix(f.Name(), ".yml") || strings.HasSuffix(f.Name(), ".md") {
-					chore, err := parseChore(".agents/" + f.Name())
-					if err == nil && chore.Name != "" {
-						isAllowed := isChoreAllowed(overseer.Spec.Chores, chore.Name)
-						isPaused := strings.EqualFold(chore.Schedule, "never")
-						if isAllowed && !isPaused {
-							currentChores[slugify(chore.Name)] = true
-						} else if isAllowed && isPaused {
-							pausedChores[slugify(chore.Name)] = true
+				if chore.Name != "" {
+					if isChoreAllowed(overseer.Spec.Chores, chore.Name) {
+						slug := k8s.TruncateLabel(k8s.Slugify(chore.Name))
+						if strings.EqualFold(chore.Schedule, "never") {
+							pausedChores[slug] = true
+						} else {
+							currentChores[slug] = true
 						}
 					}
 				}
 			}
+			return nil
+		})
+
+		if err == nil {
+			choresReadSuccessful = true
+		} else if os.IsNotExist(err) {
+			// If .agents doesn't exist, check if we are in the repo root to prevent accidental mass deletion
+			if _, errRepo := os.Stat(".git"); errRepo == nil {
+				choresReadSuccessful = true
+			} else if _, errRepo := os.Stat("go.mod"); errRepo == nil {
+				choresReadSuccessful = true
+			} else {
+				klog.Warningf(".agents directory does not exist and no repository marker (.git, go.mod) found in current directory. Chore cleanup will be skipped to prevent accidental mass deletion.")
+			}
+		} else {
+			klog.Warningf("failed to walk .agents directory: %v. Chore cleanup will be skipped.", err)
 		}
+	} else {
+		// If chores are disabled, we don't want to delete based on currentChores map anyway
+		choresReadSuccessful = true
 	}
 
-	// 2. List all chore sandboxes
-	labelSelector := fmt.Sprintf("review.gemini.google.com/overseer=%s,sandbox.gemini.google.com/type=chore", overseer.Name)
+	// 2. List all sandboxes for this overseer
+	labelSelector := fmt.Sprintf("review.gemini.google.com/overseer=%s", k8s.TruncateLabel(overseer.Name))
 	listOptions := metav1.ListOptions{
 		LabelSelector: labelSelector,
 	}
 	sandboxList, err := kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).List(ctx, listOptions)
 	if err != nil {
-		return fmt.Errorf("failed to list chore sandboxes: %w", err)
+		return fmt.Errorf("failed to list sandboxes: %w", err)
 	}
 
-	// 3. Delete sandboxes for chores that are no longer present or are excluded (or if all chores are effectively disallowed due to mode)
+	// 3. Reconcile sandboxes
+	skippedCount := 0
+	var reconcileErrs []error
+	issueStatusCache := make(map[int]bool)
+	prStatusCache := make(map[int]bool)
+
 	for _, item := range sandboxList.Items {
-		choreSlug, found, _ := unstructured.NestedString(item.Object, "metadata", "labels", "chore.gemini.google.com/name")
-		if found {
-			if !currentChores[choreSlug] {
-				reason := "no longer present or is excluded"
-				if pausedChores[choreSlug] {
-					reason = "paused (schedule: never)"
+		labels := item.GetLabels()
+		sandboxType, found := labels["sandbox.gemini.google.com/type"]
+
+		if !found {
+			klog.V(4).Infof("Sandbox %s lacks type label. Falling back to name inference.", item.GetName())
+			// Try to infer type from name for legacy sandboxes
+			name := item.GetName()
+			if strings.HasPrefix(name, "chore-"+overseer.Name+"-") {
+				sandboxType = "chore"
+			} else if strings.HasPrefix(name, overseer.Name+"-issue-") {
+				sandboxType = "issue"
+			} else if strings.HasPrefix(name, overseer.Name+"-pr-") {
+				sandboxType = "review"
+			} else {
+				skippedCount++
+				continue
+			}
+		}
+
+		deleteReason := ""
+		isDryRun := dryRun
+		switch sandboxType {
+		case "chore":
+			if !choresReadSuccessful {
+				continue
+			}
+
+			if choresMode == "disabled" {
+				deleteReason = "chores are disabled"
+			} else {
+				if choresMode == "dryrun" {
+					isDryRun = true
 				}
-				if choresMode == "disabled" || choresMode == "dryrun" {
-					reason = fmt.Sprintf("chores are %s", choresMode)
+				choreSlug, found := labels["chore.gemini.google.com/name"]
+				if !found {
+					klog.V(4).Infof("Sandbox %s lacks chore name label. Falling back to name inference.", item.GetName())
+					// Infer slug from name: chore-<overseer>-<slug>
+					prefix := fmt.Sprintf("chore-%s-", overseer.Name)
+					if strings.HasPrefix(item.GetName(), prefix) {
+						choreSlug = strings.TrimPrefix(item.GetName(), prefix)
+						if choreSlug != "" {
+							found = true
+						}
+					}
 				}
-				fmt.Printf("Chore %s %s. Deleting sandbox %s.\n", choreSlug, reason, item.GetName())
+
+				if found && !currentChores[k8s.TruncateLabel(k8s.Slugify(choreSlug))] {
+					deleteReason = "chore is no longer present or is excluded"
+					if pausedChores[k8s.TruncateLabel(k8s.Slugify(choreSlug))] {
+						deleteReason = "paused (schedule: never)"
+					}
+				} else if !found {
+					deleteReason = "chore name could not be determined"
+				}
+			}
+		case "issue":
+			if issueMode == "disabled" {
+				deleteReason = "issue handling is disabled"
+			} else {
+				if issueMode == "dryrun" {
+					isDryRun = true
+				}
+				if ghClient != nil {
+					num := getIssueNumber(labels, item.GetName(), overseer.Name)
+					if num > 0 {
+						open, cached := issueStatusCache[num]
+						if !cached {
+							issue, _, err := ghClient.Issues.Get(ctx, owner, repo, num)
+							if err == nil {
+								open = issue.GetState() == "open"
+								issueStatusCache[num] = open
+							} else if github.IsNotFound(err) {
+								open = false
+								issueStatusCache[num] = open
+							} else {
+								klog.V(4).Infof("failed to check status for issue %d: %v", num, err)
+								open = true // assume open on error
+							}
+						}
+						if !open {
+							deleteReason = "issue is closed"
+						}
+					}
+				}
+			}
+		case "review":
+			if reviewMode == "disabled" && prMode == "disabled" {
+				deleteReason = "both PR and Review handling are disabled"
+			} else {
+				if reviewMode == "dryrun" || prMode == "dryrun" {
+					isDryRun = true
+				}
+				if ghClient != nil {
+					num := getPRNumber(labels, item.GetName(), overseer.Name)
+					if num > 0 {
+						open, cached := prStatusCache[num]
+						if !cached {
+							pr, _, err := ghClient.PullRequests.Get(ctx, owner, repo, num)
+							if err == nil {
+								open = pr.GetState() == "open"
+								prStatusCache[num] = open
+							} else if github.IsNotFound(err) {
+								open = false
+								prStatusCache[num] = open
+							} else {
+								klog.V(4).Infof("failed to check status for PR %d: %v", num, err)
+								open = true // assume open on error
+							}
+						}
+						if !open {
+							deleteReason = "PR is closed or merged"
+						}
+					}
+				}
+			}
+		}
+
+		if deleteReason != "" {
+			if isDryRun {
+				klog.Infof("[dryrun] Sandbox %s (%s) %s. Would delete sandbox and its associated resources.", item.GetName(), sandboxType, deleteReason)
+			} else {
+				klog.Infof("Sandbox %s (%s) %s. Deleting.", item.GetName(), sandboxType, deleteReason)
 				if err := deleteSandbox(ctx, kubeClient, namespace, item.GetName()); err != nil {
-					fmt.Printf("Warning: failed to delete sandbox %s: %v\n", item.GetName(), err)
+					klog.Warningf("failed to clean up resources for sandbox %s: %v", item.GetName(), err)
+					reconcileErrs = append(reconcileErrs, err)
 				}
 			}
 		}
 	}
 
-	fmt.Println("Reconciliation complete.")
-	return nil
+	if skippedCount > 0 {
+		klog.Warningf("Skipped %d sandboxes whose type could not be determined.", skippedCount)
+	}
+
+	if !choresReadSuccessful && choresMode != "disabled" {
+		reconcileErrs = append(reconcileErrs, fmt.Errorf("chore reconciliation was incomplete due to directory read or parsing errors"))
+	}
+
+	klog.V(2).Infof("Reconciliation complete.")
+	return errors.Join(reconcileErrs...)
 }
 
 func isChoreAllowed(spec *overseerv1alpha1.ChoresSpec, name string) bool {
@@ -1169,26 +1557,10 @@ func isChoreAllowed(spec *overseerv1alpha1.ChoresSpec, name string) bool {
 	return true
 }
 
-func buildDeleteCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "delete",
-		Short: "Delete resources",
+func runDeleteSandboxes(ctx context.Context, sandboxNames []string) error {
+	if len(sandboxNames) == 0 {
+		return fmt.Errorf("at least one sandbox name is required")
 	}
-
-	sandboxCmd := &cobra.Command{
-		Use:   "sandbox [name]",
-		Short: "Delete a sandbox and its associated resources (like the -lb service)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			return runDeleteSandbox(context.Background(), args[0])
-		},
-	}
-	cmd.AddCommand(sandboxCmd)
-
-	return cmd
-}
-
-func runDeleteSandbox(ctx context.Context, sandboxName string) error {
 	if namespace == "" {
 		return fmt.Errorf("NAMESPACE environment variable must be set")
 	}
@@ -1213,28 +1585,135 @@ func runDeleteSandbox(ctx context.Context, sandboxName string) error {
 		Clientset:     clientset,
 	}
 
-	return deleteSandbox(ctx, kubeClient, namespace, sandboxName)
+	// Deduplicate sandbox names
+	uniqueNames := make(map[string]bool)
+	var deduplicatedNames []string
+	for _, name := range sandboxNames {
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "" && !uniqueNames[name] {
+			uniqueNames[name] = true
+			deduplicatedNames = append(deduplicatedNames, name)
+		}
+	}
+
+	if len(deduplicatedNames) == 0 {
+		return fmt.Errorf("no valid sandbox names provided")
+	}
+
+	var errs []error
+	for _, sandboxName := range deduplicatedNames {
+		if dryRun {
+			// Fetch sandbox first during dry run to provide better simulation
+			_, err := kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Get(ctx, sandboxName, metav1.GetOptions{})
+			if err != nil {
+				if kerrors.IsNotFound(err) {
+					klog.Warningf("[dryrun] Sandbox %s not found in cluster. Skipping.", sandboxName)
+				} else {
+					klog.Warningf("[dryrun] Failed to check for sandbox %s: %v", sandboxName, err)
+				}
+				continue
+			}
+			klog.Infof("[dryrun] Would delete sandbox %s and associated resources", sandboxName)
+			continue
+		}
+
+		klog.Infof("Deleting sandbox %s...", sandboxName)
+		if err := deleteSandbox(ctx, kubeClient, namespace, sandboxName); err != nil {
+			klog.Warningf("cleanup failed for sandbox %s: %v", sandboxName, err)
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
+// deleteSandbox deletes a sandbox resource and its associated services.
+// It first attempts to delete the sandbox itself, then finds and deletes services
+// matching the 'sandbox=<name>' label, and finally falls back to a name-based
+// deletion for the '<name>-lb' service to ensure legacy resources are cleaned up.
 func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, namespace, sandboxName string) error {
-	fmt.Printf("Deleting sandbox %s...\n", sandboxName)
-	err := kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Delete(ctx, sandboxName, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		// handle string check if errors package is not behaving as expected with dynamic client
-		if !strings.Contains(err.Error(), "not found") {
-			return err
+	var errs []error
+	propagationPolicy := metav1.DeletePropagationBackground
+	err := kubeClient.DynamicClient.Resource(k8s.SandboxGVR).Namespace(namespace).Delete(ctx, sandboxName, metav1.DeleteOptions{
+		PropagationPolicy: &propagationPolicy,
+	})
+	if err != nil && !kerrors.IsNotFound(err) {
+		errs = append(errs, fmt.Errorf("failed to delete sandbox %s: %w", sandboxName, err))
+	}
+
+	deletedServices := make(map[string]bool)
+
+	// Also delete service if it exists. We search by labels for robustness.
+	// We try both new and old labels.
+	selectors := []string{
+		"sandbox.gemini.google.com/name=" + k8s.TruncateLabel(sandboxName),
+		"sandbox=" + k8s.TruncateLabel(sandboxName),
+		"sandbox=" + sandboxName, // Fallback for mixed-case or non-truncated legacy labels
+	}
+
+	for _, selector := range selectors {
+		listOptions := metav1.ListOptions{
+			LabelSelector: selector,
+		}
+		services, err := kubeClient.Clientset.CoreV1().Services(namespace).List(ctx, listOptions)
+		if err == nil {
+			for _, svc := range services.Items {
+				if deletedServices[svc.Name] {
+					continue
+				}
+				deletedServices[svc.Name] = true // Track attempted deletion
+				klog.Infof("Deleting service %s...", svc.Name)
+				err = kubeClient.Clientset.CoreV1().Services(namespace).Delete(ctx, svc.Name, metav1.DeleteOptions{
+					PropagationPolicy: &propagationPolicy,
+				})
+				if err != nil && !kerrors.IsNotFound(err) {
+					errs = append(errs, fmt.Errorf("failed to delete service %s: %w", svc.Name, err))
+				}
+			}
+		} else if !kerrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("failed to list services for selector %s: %w", selector, err))
 		}
 	}
-	// Also delete service
+
+	// Fallback to name-based deletion for services that might lack labels (legacy)
 	serviceName := sandboxName + "-lb"
-	fmt.Printf("Deleting service %s...\n", serviceName)
-	err = kubeClient.Clientset.CoreV1().Services(namespace).Delete(ctx, serviceName, metav1.DeleteOptions{})
-	if err != nil && !errors.IsNotFound(err) {
-		if !strings.Contains(err.Error(), "not found") {
-			return err
+	if len(serviceName) <= 63 {
+		if !deletedServices[serviceName] {
+			deletedServices[serviceName] = true
+			klog.Infof("Deleting service %s...", serviceName)
+			err = kubeClient.Clientset.CoreV1().Services(namespace).Delete(ctx, serviceName, metav1.DeleteOptions{
+				PropagationPolicy: &propagationPolicy,
+			})
+			if err != nil && !kerrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("failed to delete legacy service %s: %w", serviceName, err))
+			}
 		}
+	} else {
+		klog.Warningf("Skipping name-based deletion of associated service %s: name too long (>63 characters). Please manually check for orphaned services.", serviceName)
 	}
-	return nil
+
+	return errors.Join(errs...)
+}
+
+// getMode returns the normalized mode (enabled, disabled, or dryrun) from an environment variable.
+// It handles case-insensitivity, trims whitespace and quotes, and supports boolean
+// equivalents (true/false, on/off, etc.) and various dry-run spellings.
+func getMode(name string) string {
+	val := os.Getenv(name)
+	m := strings.ToLower(strings.Trim(val, " \t\n\r\"'"))
+	switch m {
+	case "enabled", "enable", "true", "1", "yes", "on":
+		return "enabled"
+	case "disabled", "disable", "false", "0", "no", "off":
+		return "disabled"
+	case "dryrun", "dry-run", "dry_run", "dry run":
+		return "dryrun"
+	case "":
+		return "enabled"
+	default:
+		klog.Warningf("unrecognized mode %q for environment variable %s. Defaulting to \"enabled\" for safety. Valid modes are: enabled, disabled, dryrun.", val, name)
+		return "enabled"
+	}
 }
 
 func getTokenFromScript() (string, error) {

@@ -72,7 +72,7 @@ func (s *Server) getOverseerChores(c *gin.Context) {
 	name := c.Param("name")
 	// Chores are sandboxes in the overseer namespace with specific labels
 	namespace := fmt.Sprintf("overseer-%s", name)
-	labelSelector := fmt.Sprintf("review.gemini.google.com/overseer=%s,sandbox.gemini.google.com/type=chore", name)
+	labelSelector := fmt.Sprintf("review.gemini.google.com/overseer=%s,sandbox.gemini.google.com/type=chore", k8s.TruncateLabel(name))
 	sandboxes, err := s.K8sManager.ListSandboxes(c.Request.Context(), namespace, labelSelector)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list chore sandboxes"})

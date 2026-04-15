@@ -58,7 +58,11 @@ RUN npm install -g @google/gemini-cli @anthropic-ai/claude-code
 
 # Install code-server
 RUN curl -fsSL https://code-server.dev/install.sh | sh
-RUN code-server --install-extension golang.go --install-extension vscodevim.vim
+RUN for i in 1 2 3 4 5; do \
+        code-server --install-extension golang.go --install-extension vscodevim.vim && break || \
+        if [ $i -eq 5 ]; then exit 1; fi; \
+        sleep 5; \
+    done
 
 COPY --from=build-repo-sandbox /repo-sandbox /repo-agent/repo-sandbox
 COPY --from=build-gh /bin/gh /bin/gh

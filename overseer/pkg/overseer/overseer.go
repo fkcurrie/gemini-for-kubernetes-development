@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	overseerv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/overseer/pkg/api/v1alpha1"
+	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/k8s"
 )
 
 // ReconcileOverseer ensures the Overseer sandbox is running for the given Overseer.
@@ -355,7 +356,7 @@ func newOverseerSandboxFromOverseer(o *overseerv1alpha1.Overseer, name, namespac
 				"namespace": namespace,
 				"labels": map[string]interface{}{
 					"sandbox-type":                        "agent",
-					"overseer.gemini.google.com/overseer": o.Name,
+					"overseer.gemini.google.com/overseer": k8s.TruncateLabel(o.Name),
 				},
 			},
 			"spec": map[string]interface{}{
