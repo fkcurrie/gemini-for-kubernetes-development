@@ -23,6 +23,13 @@ import (
 	"strings"
 )
 
+var (
+	reSanitize = regexp.MustCompile(`[^a-z0-9._-]`)
+	reDashes   = regexp.MustCompile(`-+`)
+	reEnds     = regexp.MustCompile(`^[^a-z0-9]+|[^a-z0-9]+$`)
+	reSlugify  = regexp.MustCompile(`[^a-z0-9]+`)
+)
+
 // TruncateLabel ensures a string is a valid Kubernetes label value (<= 63 chars).
 // It handles unicode safe truncation, and if the string ends up empty or is truncated,
 // it appends a short hash to maintain some uniqueness.
@@ -35,10 +42,8 @@ func TruncateLabel(s string) string {
 	// 1. Lowercase and Sanitize middle characters
 	// Kubernetes label values must consist of alphanumeric characters, '-', '_' or '.'
 	s = strings.ToLower(s)
-	reSanitize := regexp.MustCompile(`[^a-z0-9._-]`)
 	s = reSanitize.ReplaceAllString(s, "-")
 	// Collapse multiple dashes for cleaner labels
-	reDashes := regexp.MustCompile(`-+`)
 	s = reDashes.ReplaceAllString(s, "-")
 
 	// 2. Unicode safe truncation
@@ -61,7 +66,6 @@ func TruncateLabel(s string) string {
 	// 4. Robust Alphanumeric Trimming
 	// Kubernetes labels must start and end with an alphanumeric character ([a-z0-9A-Z])
 	// Trim non-alphanumeric from both ends in one pass.
-	reEnds := regexp.MustCompile(`^[^a-z0-9]+|[^a-z0-9]+$`)
 	s = reEnds.ReplaceAllString(s, "")
 
 	if s == "" {
@@ -79,15 +83,13 @@ func Slugify(s string) string {
 	s = strings.ToLower(s)
 
 	// 2. Replace non-alphanumeric with dashes
-	re := regexp.MustCompile(`[^a-z0-9]+`)
-	s = re.ReplaceAllString(s, "-")
+	s = reSlugify.ReplaceAllString(s, "-")
 
 	// 3. Trim dashes from both ends
 	s = strings.Trim(s, "-")
 
 	// 4. Collapse multiple dashes
-	re2 := regexp.MustCompile(`-+`)
-	s = re2.ReplaceAllString(s, "-")
+	s = reDashes.ReplaceAllString(s, "-")
 
 	return s
 }
