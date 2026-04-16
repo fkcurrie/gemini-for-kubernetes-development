@@ -1543,6 +1543,10 @@ func runReconcile(ctx context.Context) error {
 					}
 				}
 			}
+		default:
+			klog.V(4).Infof("Sandbox %s has unrecognized type %q. Skipping.", item.GetName(), sandboxType)
+			skippedCount++
+			continue
 		}
 
 		if deleteReason != "" {
@@ -1559,7 +1563,7 @@ func runReconcile(ctx context.Context) error {
 	}
 
 	if skippedCount > 0 {
-		klog.Warningf("Skipped %d sandboxes whose type could not be determined.", skippedCount)
+		klog.Warningf("Skipped %d sandboxes whose type could not be determined or were unrecognized.", skippedCount)
 	}
 
 	if !choresReadSuccessful && choresMode != "disabled" {
@@ -1676,6 +1680,29 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		errs = append(errs, fmt.Errorf("failed to delete sandbox %s: %w", sandboxName, err))
 	}
 
+	// Also delete associated SandboxTasks
+	taskGVR := schema.GroupVersionResource{
+		Group:    "custom.agents.x-k8s.io",
+		Version:  "v1alpha1",
+		Resource: "sandboxtasks",
+	}
+	taskList, err := kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "sandbox.gemini.google.com/sandbox-name=" + sandboxName,
+	})
+	if err == nil {
+		for _, task := range taskList.Items {
+			klog.Infof("Deleting SandboxTask %s...", task.GetName())
+			err = kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).Delete(ctx, task.GetName(), metav1.DeleteOptions{
+				PropagationPolicy: &propagationPolicy,
+			})
+			if err != nil && !kerrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("failed to delete SandboxTask %s: %w", task.GetName(), err))
+			}
+		}
+	} else if !kerrors.IsNotFound(err) {
+		errs = append(errs, fmt.Errorf("failed to list SandboxTasks for sandbox %s: %w", sandboxName, err))
+	}
+
 	deletedServices := make(map[string]bool)
 
 	// Also delete service if it exists. We search by labels for robustness.
@@ -1737,16 +1764,20 @@ func getMode(name string) string {
 	val := os.Getenv(name)
 	m := strings.ToLower(strings.Trim(val, " \t\n\r\"'"))
 	switch m {
-	case "enabled", "enable", "true", "1", "yes", "on":
+	case "enabled", "enable", "true", "1", "yes", "on", "t", "y":
 		return "enabled"
-	case "disabled", "disable", "false", "0", "no", "off":
+	case "disabled", "disable", "false", "0", "no", "off", "f", "n":
 		return "disabled"
 	case "dryrun", "dry-run", "dry_run", "dry run":
 		return "dryrun"
 	case "":
 		return "enabled"
 	default:
-		klog.Warningf("unrecognized mode %q for environment variable %s. Defaulting to \"enabled\" for safety. Valid modes are: enabled, disabled, dryrun.", val, name)
+		displayVal := val
+		if len(displayVal) > 50 {
+			displayVal = displayVal[:47] + "..."
+		}
+		klog.Warningf("unrecognized mode %q for environment variable %s. Defaulting to \"enabled\" for safety. Valid modes are: enabled, disabled, dryrun.", displayVal, name)
 		return "enabled"
 	}
 }
