@@ -1284,7 +1284,7 @@ func getPRNumber(labels map[string]string, name string, overseerName string) int
 	if numStr, ok := labels["pr.gemini.google.com/number"]; ok {
 		num, err := strconv.Atoi(numStr)
 		if err != nil {
-			klog.V(4).Infof("failed to parse issue number %q: %v", numStr, err)
+			klog.V(4).Infof("failed to parse PR number %q: %v", numStr, err)
 		}
 		return num
 	}
