@@ -24,8 +24,10 @@ def get_latest_agent_sandbox_version():
     """Fetches the latest Agent Sandbox version from the GitHub API."""
     url = "https://api.github.com/repos/kubernetes-sigs/agent-sandbox/releases/latest"
     headers = {}
-    if "GITHUB_TOKEN" in os.environ:
-        headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+    github_token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PAT")
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     tag_name = response.json()["tag_name"]
@@ -56,7 +58,7 @@ def main():
             return
 
         print(f"Installing agent-sandbox version: {version}")
- 
+
         # kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.1.0-rc.0/manifest.yaml
         install_command = [
             "kubectl", "apply", "-f",
@@ -77,7 +79,7 @@ def main():
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f"Error executing command: {e}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(e.returncode or 1)
     except Exception as e:
         print(f"An unexpected error occurred: {e}", file=sys.stderr)
         sys.exit(1)
