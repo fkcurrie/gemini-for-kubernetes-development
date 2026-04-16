@@ -64,8 +64,8 @@ func (o *RollbackOptions) InitDefaults() {
 	if o.PullRequestID == 0 {
 		prid := os.Getenv("PULL_REQUEST_ID")
 		if prid != "" {
-			if _, err := fmt.Sscanf(prid, "%d", &o.PullRequestID); err != nil {
-				o.PullRequestID = 0
+			if val, err := strconv.Atoi(prid); err == nil {
+				o.PullRequestID = val
 			}
 		}
 	}

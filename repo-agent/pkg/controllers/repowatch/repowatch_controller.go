@@ -54,6 +54,7 @@ import (
 	sandboxtaskv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/sandboxtask/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/clients"
 	pkg_github "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
+	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/k8s"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/prompts"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/sandbox"
 )
@@ -452,7 +453,7 @@ func (r *Reconciler) reconcileReviews(ctx context.Context, repoWatch *reviewv1al
 	sandboxList.SetGroupVersionKind(sandboxGVK)
 
 	labelSelector := client.MatchingLabels{
-		"review.gemini.google.com/repowatch": repoWatch.Name,
+		"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 	}
 
 	if err := r.List(ctx, sandboxList, client.InNamespace(repoWatch.Namespace), labelSelector); err != nil {
@@ -1073,7 +1074,7 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			Name:      name,
 			Namespace: repoWatch.Namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/repowatch": repoWatch.Name,
+				"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 				"sandbox.gemini.google.com/type":     "issue",
 				"sandbox-type":                       "issue",
 			},
@@ -1253,7 +1254,7 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.
 			Name:      sandboxName,
 			Namespace: repoWatch.Namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/repowatch": repoWatch.Name,
+				"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 				"sandbox.gemini.google.com/type":     "review",
 			},
 			UserLogin:   userLogin,
@@ -1328,8 +1329,8 @@ func (r *Reconciler) createSandboxTask(ctx context.Context, repoWatch *reviewv1a
 			Name:      taskName,
 			Namespace: repoWatch.Namespace,
 			Labels: map[string]string{
-				"sandbox.gemini.google.com/sandbox-name": sandboxName,
-				"review.gemini.google.com/repowatch":     repoWatch.Name,
+				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandboxName),
+				"review.gemini.google.com/repowatch":     k8s.TruncateLabel(repoWatch.Name),
 			},
 		},
 		Spec: sandboxtaskv1alpha1.SandboxTaskSpec{
@@ -1622,7 +1623,7 @@ func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, re
 		Name:      sandboxName,
 		Namespace: repoWatch.Namespace,
 		Labels: map[string]string{
-			"review.gemini.google.com/repowatch": repoWatch.Name,
+			"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 			"sandbox.gemini.google.com/type":     "dev",
 			"sandbox-type":                       "dev",
 		},
@@ -1751,7 +1752,7 @@ func (r *Reconciler) unpauseSandboxIfPendingTasks(ctx context.Context, sandbox *
 
 	// List tasks
 	tasks := &sandboxtaskv1alpha1.SandboxTaskList{}
-	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": sandbox.GetName()}); err != nil {
+	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandbox.GetName())}); err != nil {
 		return false, err
 	}
 
@@ -1794,7 +1795,7 @@ func (r *Reconciler) pauseSandboxIfIdle(ctx context.Context, sandbox *unstructur
 
 	// List tasks
 	tasks := &sandboxtaskv1alpha1.SandboxTaskList{}
-	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": sandbox.GetName()}); err != nil {
+	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandbox.GetName())}); err != nil {
 		return false, err
 	}
 
@@ -1852,7 +1853,7 @@ func (r *Reconciler) reconcileIssueFeedback(ctx context.Context, repoWatch *revi
 
 	// Check if we have an active address-feedback task
 	tasks := &sandboxtaskv1alpha1.SandboxTaskList{}
-	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": sandbox.GetName()}); err != nil {
+	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandbox.GetName())}); err != nil {
 		return err
 	}
 
@@ -1990,7 +1991,7 @@ func (r *Reconciler) reconcilePRFailures(ctx context.Context, repoWatch *reviewv
 
 	// Check if we have an active task
 	tasks := &sandboxtaskv1alpha1.SandboxTaskList{}
-	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": sandbox.GetName()}); err != nil {
+	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandbox.GetName())}); err != nil {
 		return err
 	}
 
@@ -2128,7 +2129,7 @@ var prURLRegex = regexp.MustCompile(`https://github\.com/[\w-]+/[\w-]+/pull/\d+`
 func (r *Reconciler) getLinkedPRFromSandbox(ctx context.Context, ghClient *github.Client, sandbox *unstructured.Unstructured) (*github.PullRequest, error) {
 	// List tasks
 	tasks := &sandboxtaskv1alpha1.SandboxTaskList{}
-	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": sandbox.GetName()}); err != nil {
+	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandbox.GetName())}); err != nil {
 		return nil, err
 	}
 

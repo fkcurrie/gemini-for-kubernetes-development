@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
+	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/k8s"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -92,7 +93,8 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 		labels[k] = v
 	}
 	// Ensure sandbox label matches for service selector
-	labels["sandbox"] = sandboxName
+	labels["sandbox"] = k8s.TruncateLabel(sandboxName)
+	labels["sandbox.gemini.google.com/name"] = k8s.TruncateLabel(sandboxName)
 	// Default type to issue if not set
 	if _, ok := labels["sandbox-type"]; !ok {
 		labels["sandbox-type"] = "issue"
@@ -453,7 +455,7 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
-				"sandbox": sandboxName,
+				"sandbox": k8s.TruncateLabel(sandboxName),
 			},
 			Ports: []corev1.ServicePort{
 				{

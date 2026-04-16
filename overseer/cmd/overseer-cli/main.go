@@ -525,11 +525,6 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		return fmt.Errorf("either --number or --pr must be provided")
 	}
 
-	if isDryRun {
-		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for issue %d in Overseer %s", taskType, number, overseerName)
-		return nil
-	}
-
 	ghClient, err := github.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create github client: %w", err)
@@ -538,6 +533,11 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 	issue, _, err := ghClient.Issues.Get(ctx, owner, repo, number)
 	if err != nil {
 		return fmt.Errorf("failed to get issue %d: %w", number, err)
+	}
+
+	if isDryRun {
+		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for issue %d (%s) in Overseer %s", taskType, number, issue.GetTitle(), overseerName)
+		return nil
 	}
 
 	if err := ensureGitHubUser(ctx, ghClient); err != nil {
@@ -666,12 +666,8 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 			return fmt.Errorf("no completed review task found for sandbox %s", sandboxName)
 		}
 
-		if isDryRun {
-			klog.Infof("[dryrun] Would submit agent draft for PR %d in Overseer %s (found task %s)", number, overseerName, latestReviewTask.Name)
-			return nil
-		}
 		klog.Infof("Submitting agent draft for PR %d...", number)
-		return submitAgentDraft(ctx, manager, kubeClient, namespace, overseerName, number)
+		return submitAgentDraft(ctx, manager, kubeClient, namespace, overseerName, number, isDryRun)
 	}
 
 	rwUnstructured, err := getOverseer(ctx, kubeClient.DynamicClient, overseerName)
@@ -689,11 +685,6 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
 
-	if isDryRun {
-		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for PR %d in Overseer %s", taskType, number, overseerName)
-		return nil
-	}
-
 	ghClient, err := github.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create github client: %w", err)
@@ -702,6 +693,11 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 	pr, _, err := ghClient.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
 		return fmt.Errorf("failed to get PR %d: %w", number, err)
+	}
+
+	if isDryRun {
+		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for PR %d (%s) in Overseer %s", taskType, number, pr.GetTitle(), overseerName)
+		return nil
 	}
 
 	if err := ensureGitHubUser(ctx, ghClient); err != nil {
@@ -783,7 +779,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 	return nil
 }
 
-func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *clients.KubernetesClient, namespace, overseerName string, prNumber int) error {
+func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *clients.KubernetesClient, namespace, overseerName string, prNumber int, isDryRun bool) error {
 	rwUnstructured, err := getOverseer(ctx, kubeClient.DynamicClient, overseerName)
 	if err != nil {
 		return fmt.Errorf("failed to get Overseer %s: %w", overseerName, err)
@@ -894,6 +890,11 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 		reviewRequest.Body = githubv39.String(draft)
 	} else {
 		reviewRequest = agentOutput.Review.ToGitHubReviewRequest()
+	}
+
+	if isDryRun {
+		klog.Infof("[dryrun] Would create review on GitHub for %s/%s PR %d (found task %s)", owner, repoName, prNumber, latestReviewTask.Name)
+		return nil
 	}
 
 	// Set event to COMMENT to submit directly instead of creating a draft
@@ -1696,7 +1697,7 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		Resource: "sandboxtasks",
 	}
 	taskList, err := kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "sandbox.gemini.google.com/sandbox-name=" + sandboxName,
+		LabelSelector: "sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
 	})
 	if err == nil {
 		for _, task := range taskList.Items {
@@ -1718,6 +1719,7 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 	// We try both new and old labels.
 	selectors := []string{
 		"sandbox.gemini.google.com/name=" + k8s.TruncateLabel(sandboxName),
+		"sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
 		"sandbox=" + k8s.TruncateLabel(sandboxName),
 		"sandbox=" + sandboxName, // Fallback for mixed-case or non-truncated legacy labels
 	}

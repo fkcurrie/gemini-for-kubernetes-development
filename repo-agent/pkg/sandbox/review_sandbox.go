@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
+	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/k8s"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -52,6 +53,9 @@ func NewReviewSandbox(opt ReviewSandboxOptions) (*unstructured.Unstructured, *co
 	for k, v := range opt.Labels {
 		labels[k] = v
 	}
+	// Ensure sandbox label matches for service selector
+	labels["sandbox"] = k8s.TruncateLabel(sandboxName)
+	labels["sandbox.gemini.google.com/name"] = k8s.TruncateLabel(sandboxName)
 	// Default type to review if not set
 	if _, ok := labels["sandbox-type"]; !ok {
 		labels["sandbox-type"] = "review"
@@ -244,7 +248,7 @@ func NewReviewSandbox(opt ReviewSandboxOptions) (*unstructured.Unstructured, *co
 				"podTemplate": map[string]interface{}{
 					"metadata": map[string]interface{}{
 						"labels": map[string]interface{}{
-							"sandbox": sandboxName,
+							"sandbox": k8s.TruncateLabel(sandboxName),
 						},
 					},
 					"spec": map[string]interface{}{
@@ -329,7 +333,7 @@ func NewReviewSandbox(opt ReviewSandboxOptions) (*unstructured.Unstructured, *co
 			},
 			"spec": map[string]interface{}{
 				"selector": map[string]interface{}{
-					"sandbox": sandboxName,
+					"sandbox": k8s.TruncateLabel(sandboxName),
 				},
 				"ports": []interface{}{
 					map[string]interface{}{
