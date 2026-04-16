@@ -395,7 +395,7 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 
 	apiKeySecretName := overseer.Spec.GeminiAPIKeySecretName
 	if apiKeySecretName == "" {
-		apiKeySecretName = "gemini-api-key"
+		apiKeySecretName = "gemini-vscode-tokens"
 	}
 
 	githubSecretName := overseer.Spec.RobotAccount
@@ -1046,7 +1046,7 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 
 	apiKeySecretName := overseer.Spec.GeminiAPIKeySecretName
 	if apiKeySecretName == "" {
-		apiKeySecretName = "gemini-api-key"
+		apiKeySecretName = "gemini-vscode-tokens"
 	}
 
 	githubSecretName := overseer.Spec.RobotAccount
@@ -1124,7 +1124,7 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 
 	apiKeySecretName := overseer.Spec.GeminiAPIKeySecretName
 	if apiKeySecretName == "" {
-		apiKeySecretName = "gemini-api-key"
+		apiKeySecretName = "gemini-vscode-tokens"
 	}
 
 	maxReviewFiles := overseer.Spec.Review.MaxReviewFiles

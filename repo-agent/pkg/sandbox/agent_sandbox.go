@@ -185,7 +185,7 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 			"valueFrom": map[string]interface{}{
 				"secretKeyRef": map[string]interface{}{
 					"name":     opt.LLMAPIKeySecretName,
-					"key":      "key",
+					"key":      "gemini",
 					"optional": true,
 				},
 			},

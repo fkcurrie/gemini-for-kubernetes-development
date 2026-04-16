@@ -125,7 +125,7 @@ spec:
     maxSandboxes: 5
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-api-key
+      apiKeySecretRef: gemini-vscode-tokens
       prompt: |
         You are an expert code reviewer. Please review this PR for:
         - Logic errors
@@ -141,7 +141,7 @@ spec:
     issueShutdownAfterMinutes: 300
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-api-key
+      apiKeySecretRef: gemini-vscode-tokens
       prompt: |
         You are an expert software engineer. 
         Analyze the issue, reproduce the bug, and implement a fix.

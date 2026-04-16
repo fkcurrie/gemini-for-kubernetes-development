@@ -265,9 +265,9 @@ func applyManifest(_ *Config) error {
 func createSecrets(cfg *Config) error {
 	ns := systemNamespace
 
-	fmt.Println("  Creating gemini-api-key secret …")
-	if err := applySecret(ns, "gemini-api-key", map[string]string{
-		"key": cfg.GeminiAPIKey,
+	fmt.Println("  Creating gemini-vscode-tokens secret …")
+	if err := applySecret(ns, "gemini-vscode-tokens", map[string]string{
+		"gemini": cfg.GeminiAPIKey,
 	}); err != nil {
 		return err
 	}
@@ -465,13 +465,13 @@ spec:
   review:
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-api-key
+      apiKeySecretRef: gemini-vscode-tokens
     maxActiveSandboxes: 2
     workspaceDiskSize: 10Gi
   issue:
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-api-key
+      apiKeySecretRef: gemini-vscode-tokens
     maxActiveSandboxes: 2
     workspaceDiskSize: 10Gi
 `
@@ -486,9 +486,9 @@ func createRepoWatch(cfg *Config) error {
 		}
 	}
 
-	// Copy the github-token and gemini-api-key secrets into the watch namespace
+	// Copy the github-token and gemini-vscode-tokens secrets into the watch namespace
 	// so the RepoWatch controller can access them.
-	for _, secret := range []string{"github-token", "gemini-api-key"} {
+	for _, secret := range []string{"github-token", "gemini-vscode-tokens"} {
 		fmt.Printf("  Copying secret %s → %s …\n", secret, cfg.WatchNamespace)
 		secretJSON, err := output("kubectl", "get", "secret", "-n", systemNamespace, secret, "-o", "json")
 		if err != nil {

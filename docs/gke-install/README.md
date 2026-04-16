@@ -117,7 +117,7 @@ go run . \
   --cluster=my-gke-cluster \
   --region=us-central1 \
   --repo=https://github.com/my-org/my-repo \
-  --gemini-api-key="AIza..." \
+  --gemini-vscode-tokens="AIza..." \
   --github-pat="ghp_..." \
   --bot-name="My Bot" \
   --bot-email="bot@example.com"
@@ -130,7 +130,7 @@ The installer performs these steps in order:
 3. Installs **Kyverno** (required for image-reference rewriting; skipped if already present)
 4. Installs Helm charts: Envoy Gateway, KRO, Agent Sandbox
 5. Applies the release manifest (`manifest.yaml`)
-6. Creates the `gemini-api-key` and `github-token` secrets
+6. Creates the `gemini-vscode-tokens` and `github-token` secrets
 7. Applies the [GKE compatibility fixes](#gke-specific-compatibility-fixes)
 8. Creates the `RepoWatch` CR in a dedicated namespace
 9. Waits for all deployments and the repowatch-controller to become ready
@@ -190,9 +190,9 @@ kubectl apply -f https://github.com/gke-labs/gemini-for-kubernetes-development/r
 
 ```bash
 # Gemini API key
-kubectl create secret generic gemini-api-key \
+kubectl create secret generic gemini-vscode-tokens \
   -n repo-agent-system \
-  --from-literal=key="$GEMINI_API_KEY" \
+  --from-literal=gemini="$GEMINI_API_KEY" \
   --dry-run=client -o yaml | kubectl apply -f -
 
 # GitHub token — single-user mode
@@ -306,13 +306,13 @@ spec:
   review:
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-api-key
+      apiKeySecretRef: gemini-vscode-tokens
     maxActiveSandboxes: 2
     workspaceDiskSize: 10Gi
   issue:
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-api-key
+      apiKeySecretRef: gemini-vscode-tokens
     maxActiveSandboxes: 2
     workspaceDiskSize: 10Gi
 ```
@@ -323,7 +323,7 @@ Copy the required secrets into the RepoWatch namespace:
 NS=my-repo
 kubectl create namespace $NS
 
-for SECRET in github-token gemini-api-key; do
+for SECRET in github-token gemini-vscode-tokens; do
   kubectl get secret $SECRET -n repo-agent-system -o json \
     | jq 'del(.metadata.resourceVersion,.metadata.uid,.metadata.creationTimestamp,.metadata.annotations) | .metadata.namespace = "'$NS'"' \
     | kubectl apply -f -
