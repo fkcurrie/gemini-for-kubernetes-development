@@ -49,7 +49,7 @@ func TestParseRepoURL(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			url:     "https://github.com/owner/repo.git/",
+			url:     "github.com/owner/repo.git/",
 			owner:   "owner",
 			repo:    "repo",
 			wantErr: false,
@@ -66,6 +66,19 @@ func TestParseRepoURL(t *testing.T) {
 			repo:    "repo",
 			wantErr: false,
 		},
+		{
+			url:     "github.com:owner/repo.git",
+			owner:   "owner",
+			repo:    "repo",
+			wantErr: false,
+		},
+		{
+			url:     "github.com:owner/repo",
+			owner:   "owner",
+			repo:    "repo",
+			wantErr: false,
+		},
+
 		{
 			url:     "https://gitlab.com/group/subgroup/repo",
 			owner:   "group/subgroup",

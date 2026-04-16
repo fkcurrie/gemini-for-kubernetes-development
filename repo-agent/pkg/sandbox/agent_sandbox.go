@@ -179,6 +179,17 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 			"name":  "GEMINI_API_KEY",
 			"value": opt.LLMAPIKey,
 		})
+	} else if opt.LLMAPIKeySecretName != "" {
+		env = append(env, map[string]interface{}{
+			"name": "GEMINI_API_KEY",
+			"valueFrom": map[string]interface{}{
+				"secretKeyRef": map[string]interface{}{
+					"name":     opt.LLMAPIKeySecretName,
+					"key":      "key",
+					"optional": true,
+				},
+			},
+		})
 	}
 
 	env = append(env,

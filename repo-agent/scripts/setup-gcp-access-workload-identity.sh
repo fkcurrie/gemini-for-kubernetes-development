@@ -30,12 +30,12 @@ fi
 if ! gcloud projects get-iam-policy "$PROJECT_ID" \
     --flatten="bindings[].members" \
     --format="table(bindings.role)" \
-    --filter="bindings.members:serviceAccount:${GCP_SA_EMAIL}" | grep -q "roles/owner"; then
+    --filter="bindings.members:serviceAccount:${GCP_SA_EMAIL}" | grep -q "roles/editor"; then
     gcloud projects add-iam-policy-binding $PROJECT_ID \
         --member="serviceAccount:${GCP_SA_EMAIL}" \
-        --role="roles/owner"
+        --role="roles/editor"
 else
-    echo "GCP Service Account ${GCP_SA_EMAIL} already has roles/owner on project ${PROJECT_ID}."
+    echo "GCP Service Account ${GCP_SA_EMAIL} already has roles/editor on project ${PROJECT_ID}."
 fi
 
 # 4. Bind the Kubernetes Service Account to the GCP Service Account

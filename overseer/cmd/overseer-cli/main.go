@@ -512,10 +512,6 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 	}
 
 	if number == 0 && prNumber != 0 {
-		if isDryRun {
-			klog.Infof("[dryrun] Would resolve issue from PR %d and create/ensure sandbox and task %s in Overseer %s", prNumber, taskType, overseerName)
-			return nil
-		}
 		klog.Infof("Resolving issue from PR %d...", prNumber)
 		number, err = resolveIssueFromPR(ctx, owner, repo, prNumber)
 		if err != nil {
@@ -647,8 +643,30 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 	manager := k8s.NewManager(kubeClient)
 
 	if submit {
+		klog.Infof("Validating agent draft for PR %d...", number)
+		// Basic validation: check if sandbox and completed review task exist
+		sandboxName := fmt.Sprintf("%s-pr-%d", overseerName, number)
+		taskList, err := manager.ListSandboxTasks(ctx, namespace, sandboxName)
+		if err != nil {
+			return fmt.Errorf("failed to list tasks for sandbox %s: %w", sandboxName, err)
+		}
+
+		var latestReviewTask *sandboxtaskv1alpha1.SandboxTask
+		for i := range taskList.Items {
+			task := &taskList.Items[i]
+			if task.Spec.Type == "review" && task.Status.TaskState == "Completed" {
+				if latestReviewTask == nil || task.CreationTimestamp.After(latestReviewTask.CreationTimestamp.Time) {
+					latestReviewTask = task
+				}
+			}
+		}
+
+		if latestReviewTask == nil {
+			return fmt.Errorf("no completed review task found for sandbox %s", sandboxName)
+		}
+
 		if isDryRun {
-			klog.Infof("[dryrun] Would submit agent draft for PR %d in Overseer %s", number, overseerName)
+			klog.Infof("[dryrun] Would submit agent draft for PR %d in Overseer %s (found task %s)", number, overseerName, latestReviewTask.Name)
 			return nil
 		}
 		klog.Infof("Submitting agent draft for PR %d...", number)
@@ -910,9 +928,11 @@ var (
 )
 
 func ensureGitHubUser(ctx context.Context, ghClient *github.Client) error {
-	githubBotLogin = os.Getenv("GITHUB_BOT_LOGIN")
-	githubBotName = os.Getenv("GITHUB_BOT_NAME")
-	githubBotEmail = os.Getenv("GITHUB_BOT_EMAIL")
+	if githubBotLogin == "" {
+		githubBotLogin = os.Getenv("GITHUB_BOT_LOGIN")
+		githubBotName = os.Getenv("GITHUB_BOT_NAME")
+		githubBotEmail = os.Getenv("GITHUB_BOT_EMAIL")
+	}
 
 	if githubUserLogin != "" {
 		if githubUserEmail == "" {
@@ -961,8 +981,8 @@ func ensureGitHubUser(ctx context.Context, ghClient *github.Client) error {
 
 func parseRepoURL(repoURL string) (string, string, error) {
 	// Handle SSH URLs like git@github.com:owner/repo or github.com:owner/repo
-	// Standard SSH detection: contains @ and : but no ://, OR strictly matching git@ prefix
-	isSSH := (strings.Contains(repoURL, "@") && strings.Contains(repoURL, ":") && !strings.Contains(repoURL, "://")) || strings.HasPrefix(repoURL, "git@")
+	// Standard SSH detection: contains : but no ://, OR strictly matching git@ prefix
+	isSSH := (strings.Contains(repoURL, ":") && !strings.Contains(repoURL, "://")) || strings.HasPrefix(repoURL, "git@")
 	if isSSH {
 		// Clean up common suffixes/separators before splitting
 		s := strings.SplitN(repoURL, "?", 2)[0]
