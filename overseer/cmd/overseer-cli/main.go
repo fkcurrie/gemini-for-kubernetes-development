@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1261,16 +1262,16 @@ func getOverseer(ctx context.Context, dynClient dynamic.Interface, name string) 
 
 func getIssueNumber(labels map[string]string, name string, overseerName string) int {
 	if numStr, ok := labels["issue.gemini.google.com/number"]; ok {
-		var num int
-		if _, err := fmt.Sscanf(numStr, "%d", &num); err != nil {
+		num, err := strconv.Atoi(numStr)
+		if err != nil {
 			klog.V(4).Infof("failed to parse issue number %q: %v", numStr, err)
 		}
 		return num
 	}
 	prefix := overseerName + "-issue-"
 	if strings.HasPrefix(name, prefix) {
-		var num int
-		if _, err := fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num); err != nil {
+		num, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		if err != nil {
 			klog.V(4).Infof("failed to parse number from name %q: %v", name, err)
 		}
 		return num
@@ -1280,16 +1281,16 @@ func getIssueNumber(labels map[string]string, name string, overseerName string) 
 
 func getPRNumber(labels map[string]string, name string, overseerName string) int {
 	if numStr, ok := labels["pr.gemini.google.com/number"]; ok {
-		var num int
-		if _, err := fmt.Sscanf(numStr, "%d", &num); err != nil {
+		num, err := strconv.Atoi(numStr)
+		if err != nil {
 			klog.V(4).Infof("failed to parse issue number %q: %v", numStr, err)
 		}
 		return num
 	}
 	prefix := overseerName + "-pr-"
 	if strings.HasPrefix(name, prefix) {
-		var num int
-		if _, err := fmt.Sscanf(strings.TrimPrefix(name, prefix), "%d", &num); err != nil {
+		num, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		if err != nil {
 			klog.V(4).Infof("failed to parse number from name %q: %v", name, err)
 		}
 		return num
