@@ -5,6 +5,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -59,7 +60,8 @@ func IsNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	if gerr, ok := err.(*githubv39.ErrorResponse); ok {
+	var gerr *githubv39.ErrorResponse
+	if errors.As(err, &gerr) {
 		return gerr.Response != nil && gerr.Response.StatusCode == 404
 	}
 	return false

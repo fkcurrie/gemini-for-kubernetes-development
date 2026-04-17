@@ -1061,7 +1061,7 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 	apiKeySecretName := repoWatch.Spec.Issue.LLM.APIKeySecretRef
 	if apiKeySecretName == "" {
 		// Fallback to a default if not specified, to avoid Pod validation error
-		apiKeySecretName = "gemini-vscode-tokens"
+		apiKeySecretName = "gemini-api-key"
 	}
 
 	ephemeralStorage := resource.MustParse("6Gi")

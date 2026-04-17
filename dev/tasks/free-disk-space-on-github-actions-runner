@@ -40,7 +40,7 @@ echo "** Disk usage:"
 df -h
 
 echo "Removing large packages"
-sudo apt-get remove -y \
+for pkg in \
   man-db \
   '^mysql-server-.*' \
   '^dotnet-.*' \
@@ -48,7 +48,9 @@ sudo apt-get remove -y \
   '^openjdk.*' '^temurin-.*' ca-certificates-java \
   'php.*' \
   '^ruby.*' \
-  microsoft-edge-stable google-chrome-stable firefox powershell mercurial-common || true
+  microsoft-edge-stable google-chrome-stable firefox powershell mercurial-common; do
+  sudo apt-get remove -y "$pkg" || echo "Warning: failed to remove $pkg"
+done
 
 sudo apt-get autoremove -y
 sudo apt-get clean

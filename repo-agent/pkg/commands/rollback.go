@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
@@ -63,12 +62,7 @@ func (o *RollbackOptions) InitDefaults() {
 		}
 	}
 	if o.PullRequestID == 0 {
-		prid := os.Getenv("PULL_REQUEST_ID")
-		if prid != "" {
-			if val, err := strconv.Atoi(prid); err == nil {
-				o.PullRequestID = val
-			}
-		}
+		o.PullRequestID = GetPullRequestIDFromEnv()
 	}
 	if o.Remote == "" {
 		o.Remote = "origin"

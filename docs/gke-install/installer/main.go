@@ -82,6 +82,7 @@ func main() {
 	flag.StringVar(&cfg.RepoURL, "repo", "", "GitHub repository URL to watch (e.g. https://github.com/org/repo)")
 	flag.StringVar(&cfg.WatchNamespace, "watch-namespace", "", "Namespace for RepoWatch CR (default: derived from repo name)")
 	flag.StringVar(&cfg.GeminiAPIKey, "gemini-api-key", "", "Google Gemini API key")
+	flag.StringVar(&cfg.GeminiAPIKey, "gemini-vscode-tokens", "", "Google Gemini API key (alias for gemini-api-key)")
 	flag.StringVar(&cfg.GitHubPAT, "github-pat", "", "GitHub Personal Access Token for the bot account")
 	flag.StringVar(&cfg.GitHubOAuthClientID, "oauth-client-id", "", "GitHub OAuth App client ID (omit for single-user mode)")
 	flag.StringVar(&cfg.GitHubOAuthSecret, "oauth-client-secret", "", "GitHub OAuth App client secret")
@@ -265,8 +266,13 @@ func applyManifest(_ *Config) error {
 func createSecrets(cfg *Config) error {
 	ns := systemNamespace
 
-	fmt.Println("  Creating gemini-vscode-tokens secret …")
+	fmt.Println("  Creating gemini-vscode-tokens and gemini-api-key secrets …")
 	if err := applySecret(ns, "gemini-vscode-tokens", map[string]string{
+		"gemini": cfg.GeminiAPIKey,
+	}); err != nil {
+		return err
+	}
+	if err := applySecret(ns, "gemini-api-key", map[string]string{
 		"gemini": cfg.GeminiAPIKey,
 	}); err != nil {
 		return err
@@ -486,9 +492,9 @@ func createRepoWatch(cfg *Config) error {
 		}
 	}
 
-	// Copy the github-token and gemini-vscode-tokens secrets into the watch namespace
+	// Copy the github-token, gemini-vscode-tokens and gemini-api-key secrets into the watch namespace
 	// so the RepoWatch controller can access them.
-	for _, secret := range []string{"github-token", "gemini-vscode-tokens"} {
+	for _, secret := range []string{"github-token", "gemini-vscode-tokens", "gemini-api-key"} {
 		fmt.Printf("  Copying secret %s → %s …\n", secret, cfg.WatchNamespace)
 		secretJSON, err := output("kubectl", "get", "secret", "-n", systemNamespace, secret, "-o", "json")
 		if err != nil {

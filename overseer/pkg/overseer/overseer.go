@@ -86,7 +86,7 @@ func newOverseerSandboxFromOverseer(o *overseerv1alpha1.Overseer, name, namespac
 
 	apiKeySecretName := o.Spec.GeminiAPIKeySecretName
 	if apiKeySecretName == "" {
-		apiKeySecretName = "gemini-vscode-tokens"
+		apiKeySecretName = "gemini-api-key"
 	}
 
 	githubSecretName := o.Spec.RobotAccount

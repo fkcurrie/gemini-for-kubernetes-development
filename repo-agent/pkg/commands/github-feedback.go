@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -105,12 +104,7 @@ func (c *GithubFeedbackCommand) InitDefaults() {
 	}
 
 	if c.PullRequestID == 0 {
-		prid := os.Getenv("PULL_REQUEST_ID")
-		if prid != "" {
-			if val, err := strconv.Atoi(prid); err == nil {
-				c.PullRequestID = val
-			}
-		}
+		c.PullRequestID = GetPullRequestIDFromEnv()
 	}
 }
 

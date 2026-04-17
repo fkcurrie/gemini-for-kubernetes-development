@@ -46,21 +46,18 @@ func TruncateLabel(s string) string {
 	// Collapse multiple dashes for cleaner labels
 	s = reDashes.ReplaceAllString(s, "-")
 
-	// 2. Unicode safe truncation
-	runes := []rune(s)
+	// 2. Truncate if too long
 	truncated := false
-	if len(runes) > 63 {
-		runes = runes[:63]
+	if len(s) > 63 {
+		s = s[:63]
 		truncated = true
 	}
-	s = string(runes)
 
 	// 3. Uniqueness via hashing if truncated
 	if truncated {
 		hash := sha256.Sum256([]byte(original))
-		// Append short hash (6 hex chars) and truncate to exactly 63 if needed.
-		// 56 runes + 1 dash + 6 hex chars = 63 characters.
-		s = fmt.Sprintf("%s-%x", string(runes[:56]), hash[:3])
+		// Append short hash (6 hex chars). 56 bytes + 1 dash + 6 hex chars = 63 characters.
+		s = fmt.Sprintf("%s-%x", strings.TrimRight(s[:56], "-"), hash[:3])
 	}
 
 	// 4. Robust Alphanumeric Trimming
