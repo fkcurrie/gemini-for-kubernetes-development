@@ -61,8 +61,8 @@ kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/downl
 
 echo "Install repo agent"
 kubectl apply -f https://github.com/gke-labs/gemini-for-kubernetes-development/releases/download/${REPO_AGENT_VERSION}/manifest.yaml
-kubectl create secret -n repo-agent-system generic gemini-vscode-tokens --from-literal=gemini="${GEMINI_API_KEY:-}" --dry-run=client -o yaml | kubectl apply -f -
 kubectl create secret -n repo-agent-system generic gemini-api-key --from-literal=gemini="${GEMINI_API_KEY:-}" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create secret -n repo-agent-system generic gemini-vscode-tokens --from-literal=gemini="${GEMINI_API_KEY:-}" --dry-run=client -o yaml | kubectl apply -f -
 if [ ! -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo "Creating Anthropic API key secret"
   kubectl create secret -n repo-agent-system generic anthropic-api-key --from-literal=claude=${ANTHROPIC_API_KEY} --dry-run=client -o yaml | kubectl apply -f -

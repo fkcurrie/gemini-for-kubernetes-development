@@ -266,13 +266,13 @@ func applyManifest(_ *Config) error {
 func createSecrets(cfg *Config) error {
 	ns := systemNamespace
 
-	fmt.Println("  Creating gemini-vscode-tokens and gemini-api-key secrets …")
-	if err := applySecret(ns, "gemini-vscode-tokens", map[string]string{
+	fmt.Println("  Creating gemini-api-key and gemini-vscode-tokens secrets …")
+	if err := applySecret(ns, "gemini-api-key", map[string]string{
 		"gemini": cfg.GeminiAPIKey,
 	}); err != nil {
 		return err
 	}
-	if err := applySecret(ns, "gemini-api-key", map[string]string{
+	if err := applySecret(ns, "gemini-vscode-tokens", map[string]string{
 		"gemini": cfg.GeminiAPIKey,
 	}); err != nil {
 		return err
@@ -471,13 +471,13 @@ spec:
   review:
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-vscode-tokens
+      apiKeySecretRef: gemini-api-key
     maxActiveSandboxes: 2
     workspaceDiskSize: 10Gi
   issue:
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-vscode-tokens
+      apiKeySecretRef: gemini-api-key
     maxActiveSandboxes: 2
     workspaceDiskSize: 10Gi
 `
@@ -492,9 +492,9 @@ func createRepoWatch(cfg *Config) error {
 		}
 	}
 
-	// Copy the github-token, gemini-vscode-tokens and gemini-api-key secrets into the watch namespace
+	// Copy the github-token, gemini-api-key and gemini-vscode-tokens secrets into the watch namespace
 	// so the RepoWatch controller can access them.
-	for _, secret := range []string{"github-token", "gemini-vscode-tokens", "gemini-api-key"} {
+	for _, secret := range []string{"github-token", "gemini-api-key", "gemini-vscode-tokens"} {
 		fmt.Printf("  Copying secret %s → %s …\n", secret, cfg.WatchNamespace)
 		secretJSON, err := output("kubectl", "get", "secret", "-n", systemNamespace, secret, "-o", "json")
 		if err != nil {
@@ -613,7 +613,7 @@ Prerequisites:
   • An existing GKE cluster (Standard or Autopilot)
   • kubectl, helm, gcloud, gh configured and in PATH
   • A GitHub Personal Access Token (repo + workflow scopes)
-  • A Google Gemini API key
+  • a Google Gemini API key
   • (Optional) A GitHub OAuth App for multi-user UI access
 `)
 }

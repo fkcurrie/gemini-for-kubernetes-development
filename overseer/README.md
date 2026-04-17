@@ -48,7 +48,7 @@ metadata:
 spec:
   repoURL: https://github.com/your-org/your-repo
   robotAccount: your-github-username # Must match ROBOT1_GH_USERID
-  geminiAPIKeySecretName: gemini-vscode-tokens
+  geminiAPIKeySecretName: gemini-api-key
   # Enable chores. This looks for .agents/<chore files>
   # and for each chore file we start a sandbox to run the agent in it.
   chores:
@@ -94,7 +94,7 @@ metadata:
 spec:
   repoURL: https://github.com/your-org/your-repo
   robotAccount: your-github-username
-  geminiAPIKeySecretName: gemini-vscode-tokens
+  geminiAPIKeySecretName: gemini-api-key
   # Inject the ConfigDir defined above
   configdirRef: my-agent-config
   chores:

@@ -100,7 +100,7 @@ def fix_issues_spec(repowatch):
       "image": "ghcr.io/gke-labs/gemini-for-kubernetes-development/generic-golang:latest",
       "issueShutdownAfterMinutes": 0,
       "llm": {
-        "apiKeySecretRef": "gemini-vscode-tokens",
+        "apiKeySecretRef": "gemini-api-key",
         "provider": "gemini-cli"
       },
       "maxActiveSandboxes": 6,

@@ -35,7 +35,7 @@ review:
   # Configuration for the LLM (Large Language Model)
   llm:
     provider: gemini-cli
-    apiKeySecretRef: gemini-vscode-tokens
+    apiKeySecretRef: gemini-api-key
     prompt: |
       You are an expert code reviewer...
       
@@ -80,7 +80,7 @@ issue:
   # Configuration for the LLM (Large Language Model)
   llm:
     provider: gemini-cli
-    apiKeySecretRef: gemini-vscode-tokens
+    apiKeySecretRef: gemini-api-key
     prompt: |
       You are a helpful assistant that fixes GitHub issues...
 
@@ -125,7 +125,7 @@ spec:
     maxSandboxes: 5
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-vscode-tokens
+      apiKeySecretRef: gemini-api-key
       prompt: |
         You are an expert code reviewer. Please review this PR for:
         - Logic errors
@@ -141,7 +141,7 @@ spec:
     issueShutdownAfterMinutes: 300
     llm:
       provider: gemini-cli
-      apiKeySecretRef: gemini-vscode-tokens
+      apiKeySecretRef: gemini-api-key
       prompt: |
         You are an expert software engineer. 
         Analyze the issue, reproduce the bug, and implement a fix.
