@@ -50,7 +50,7 @@ func (s *CodebotSandbox) WriteFile(ctx context.Context, path string, data []byte
 func launchSandboxForIssue(ctx context.Context, kube *clients.KubernetesClient, repo *github.Repo, issue *github.Issue) (*CodebotSandbox, error) {
 	sandboxName := sandboxNameForIssue(repo, issue)
 	issueURL := issue.String()
-	
+
 	sandbox, err := launchSandbox(ctx, kube, sandboxName, repo, issueURL)
 	if err != nil {
 		return nil, err
@@ -201,7 +201,6 @@ func findSandboxForPullRequest(ctx context.Context, kube *clients.KubernetesClie
 		pullRequest: pr,
 	}, true, nil
 }
-
 
 func (s *CodebotSandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	var stdout bytes.Buffer
