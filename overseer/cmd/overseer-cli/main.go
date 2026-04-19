@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -647,7 +648,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		klog.Infof("Validating agent draft for PR %d...", number)
 		// Basic validation: check if sandbox and completed review task exist
 		sandboxName := fmt.Sprintf("%s-pr-%d", overseerName, number)
-		taskList, err := manager.ListSandboxTasks(ctx, namespace, sandboxName)
+		taskList, err := manager.ListSandboxTasks(ctx, namespace, k8s.TruncateLabel(sandboxName))
 		if err != nil {
 			return fmt.Errorf("failed to list tasks for sandbox %s: %w", sandboxName, err)
 		}
@@ -1269,12 +1270,12 @@ func getIssueNumber(labels map[string]string, name string, overseerName string) 
 		}
 		return num
 	}
-	prefix := overseerName + "-issue-"
-	if strings.HasPrefix(name, prefix) {
-		num, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
-		if err != nil {
-			klog.V(4).Infof("failed to parse number from name %q: %v", name, err)
-		}
+	// Fallback to name inference: <overseerName>-issue-<number>
+	// Use regex to handle potential suffixes or truncation artifacts
+	re := regexp.MustCompile(fmt.Sprintf(`^%s-issue-(\d+)`, regexp.QuoteMeta(overseerName)))
+	matches := re.FindStringSubmatch(name)
+	if len(matches) > 1 {
+		num, _ := strconv.Atoi(matches[1])
 		return num
 	}
 	return 0
@@ -1288,12 +1289,11 @@ func getPRNumber(labels map[string]string, name string, overseerName string) int
 		}
 		return num
 	}
-	prefix := overseerName + "-pr-"
-	if strings.HasPrefix(name, prefix) {
-		num, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
-		if err != nil {
-			klog.V(4).Infof("failed to parse number from name %q: %v", name, err)
-		}
+	// Fallback to name inference: <overseerName>-pr-<number>
+	re := regexp.MustCompile(fmt.Sprintf(`^%s-pr-(\d+)`, regexp.QuoteMeta(overseerName)))
+	matches := re.FindStringSubmatch(name)
+	if len(matches) > 1 {
+		num, _ := strconv.Atoi(matches[1])
 		return num
 	}
 	return 0
@@ -1696,21 +1696,35 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		Version:  "v1alpha1",
 		Resource: "sandboxtasks",
 	}
-	taskList, err := kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
-	})
-	if err == nil {
-		for _, task := range taskList.Items {
-			klog.Infof("Deleting SandboxTask %s...", task.GetName())
-			err = kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).Delete(ctx, task.GetName(), metav1.DeleteOptions{
-				PropagationPolicy: &propagationPolicy,
-			})
-			if err != nil && !kerrors.IsNotFound(err) {
-				errs = append(errs, fmt.Errorf("failed to delete SandboxTask %s: %w", task.GetName(), err))
+
+	taskSelectors := []string{
+		"sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
+		"sandbox=" + k8s.TruncateLabel(sandboxName),
+		"sandbox=" + sandboxName,
+	}
+	deletedTasks := make(map[string]bool)
+
+	for _, selector := range taskSelectors {
+		taskList, err := kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+		})
+		if err == nil {
+			for _, task := range taskList.Items {
+				if deletedTasks[task.GetName()] {
+					continue
+				}
+				deletedTasks[task.GetName()] = true
+				klog.Infof("Deleting SandboxTask %s...", task.GetName())
+				err = kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).Delete(ctx, task.GetName(), metav1.DeleteOptions{
+					PropagationPolicy: &propagationPolicy,
+				})
+				if err != nil && !kerrors.IsNotFound(err) {
+					errs = append(errs, fmt.Errorf("failed to delete SandboxTask %s: %w", task.GetName(), err))
+				}
 			}
+		} else if !kerrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("failed to list SandboxTasks for selector %s: %w", selector, err))
 		}
-	} else if !kerrors.IsNotFound(err) {
-		errs = append(errs, fmt.Errorf("failed to list SandboxTasks for sandbox %s: %w", sandboxName, err))
 	}
 
 	deletedServices := make(map[string]bool)
@@ -1775,7 +1789,10 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		klog.Warningf("Skipping name-based deletion of associated service %s: name too long (>63 characters). Please manually check for orphaned services.", serviceName)
 	}
 
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		return fmt.Errorf("cleanup of sandbox %s failed: %w", sandboxName, errors.Join(errs...))
+	}
+	return nil
 }
 
 // getMode returns the normalized mode (enabled, disabled, or dryrun) from an environment variable.
@@ -1784,6 +1801,7 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 func getMode(name string) string {
 	val := os.Getenv(name)
 	m := strings.ToLower(strings.Trim(val, " \t\n\r\"'"))
+	m = strings.TrimSpace(m)
 	switch m {
 	case "enabled", "enable", "true", "1", "yes", "on", "t", "y":
 		return "enabled"
