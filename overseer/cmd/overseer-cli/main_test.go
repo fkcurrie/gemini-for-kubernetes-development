@@ -230,3 +230,66 @@ func TestTruncateLabel(t *testing.T) {
 		})
 	}
 }
+
+func TestGetNumber(t *testing.T) {
+	tests := []struct {
+		name         string
+		labels       map[string]string
+		sandboxName  string
+		overseerName string
+		wantIssue    int
+		wantPR       int
+	}{
+		{
+			name: "labels only",
+			labels: map[string]string{
+				"issue.gemini.google.com/number": "123",
+				"pr.gemini.google.com/number":    "456",
+			},
+			sandboxName:  "myoverseer-issue-999",
+			overseerName: "myoverseer",
+			wantIssue:    123,
+			wantPR:       456,
+		},
+		{
+			name: "fallback to name",
+			labels: map[string]string{
+				"issue.gemini.google.com/number": "invalid",
+				"pr.gemini.google.com/number":    "invalid",
+			},
+			sandboxName:  "myoverseer-issue-789",
+			overseerName: "myoverseer",
+			wantIssue:    789,
+			wantPR:       0,
+		},
+		{
+			name: "name only",
+			labels:       map[string]string{},
+			sandboxName:  "myoverseer-pr-321",
+			overseerName: "myoverseer",
+			wantIssue:    0,
+			wantPR:       321,
+		},
+		{
+			name: "mismatched overseer",
+			labels:       map[string]string{},
+			sandboxName:  "other-issue-123",
+			overseerName: "myoverseer",
+			wantIssue:    0,
+			wantPR:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotIssue := getIssueNumber(tt.labels, tt.sandboxName, tt.overseerName)
+			if gotIssue != tt.wantIssue {
+				t.Errorf("getIssueNumber() = %d, want %d", gotIssue, tt.wantIssue)
+			}
+			gotPR := getPRNumber(tt.labels, tt.sandboxName, tt.overseerName)
+			if gotPR != tt.wantPR {
+				t.Errorf("getPRNumber() = %d, want %d", gotPR, tt.wantPR)
+			}
+		})
+	}
+}

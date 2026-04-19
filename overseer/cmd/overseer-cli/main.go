@@ -37,6 +37,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -735,7 +736,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 
 	// Check if a task for this SHA already exists (only for review tasks)
 	if taskType == "review" {
-		taskList, err := manager.ListSandboxTasks(ctx, namespace, sandboxName)
+		taskList, err := manager.ListSandboxTasks(ctx, namespace, k8s.TruncateLabel(sandboxName))
 		if err == nil {
 			for i := range taskList.Items {
 				task := &taskList.Items[i]
@@ -788,7 +789,7 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 
 	sandboxName := fmt.Sprintf("%s-pr-%d", overseerName, prNumber)
 
-	taskList, err := manager.ListSandboxTasks(ctx, namespace, sandboxName)
+	taskList, err := manager.ListSandboxTasks(ctx, namespace, k8s.TruncateLabel(sandboxName))
 	if err != nil {
 		return fmt.Errorf("failed to list tasks for sandbox %s: %w", sandboxName, err)
 	}
@@ -1265,10 +1266,10 @@ func getOverseer(ctx context.Context, dynClient dynamic.Interface, name string) 
 func getIssueNumber(labels map[string]string, name string, overseerName string) int {
 	if numStr, ok := labels["issue.gemini.google.com/number"]; ok {
 		num, err := strconv.Atoi(numStr)
-		if err != nil {
-			klog.V(4).Infof("failed to parse issue number %q: %v", numStr, err)
+		if err == nil {
+			return num
 		}
-		return num
+		klog.V(4).Infof("failed to parse issue number %q: %v", numStr, err)
 	}
 	// Fallback to name inference: <overseerName>-issue-<number>
 	// Use regex to handle potential suffixes or truncation artifacts
@@ -1284,10 +1285,10 @@ func getIssueNumber(labels map[string]string, name string, overseerName string) 
 func getPRNumber(labels map[string]string, name string, overseerName string) int {
 	if numStr, ok := labels["pr.gemini.google.com/number"]; ok {
 		num, err := strconv.Atoi(numStr)
-		if err != nil {
-			klog.V(4).Infof("failed to parse PR number %q: %v", numStr, err)
+		if err == nil {
+			return num
 		}
-		return num
+		klog.V(4).Infof("failed to parse PR number %q: %v", numStr, err)
 	}
 	// Fallback to name inference: <overseerName>-pr-<number>
 	re := regexp.MustCompile(fmt.Sprintf(`^%s-pr-(\d+)`, regexp.QuoteMeta(overseerName)))
@@ -1700,9 +1701,14 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 	taskSelectors := []string{
 		"sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
 		"sandbox=" + k8s.TruncateLabel(sandboxName),
-		"sandbox=" + sandboxName,
 	}
-	deletedTasks := make(map[string]bool)
+	// Fallback to raw label only if it is a valid Kubernetes label value
+	if errsValid := kvalidation.IsValidLabelValue(sandboxName); len(errsValid) == 0 {
+		taskSelectors = append(taskSelectors, "sandbox="+sandboxName)
+	}
+
+	deletedTaskCount := 0
+	seenTasks := make(map[string]bool)
 
 	for _, selector := range taskSelectors {
 		taskList, err := kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
@@ -1710,21 +1716,25 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		})
 		if err == nil {
 			for _, task := range taskList.Items {
-				if deletedTasks[task.GetName()] {
+				if seenTasks[task.GetName()] {
 					continue
 				}
-				deletedTasks[task.GetName()] = true
-				klog.Infof("Deleting SandboxTask %s...", task.GetName())
+				seenTasks[task.GetName()] = true
 				err = kubeClient.DynamicClient.Resource(taskGVR).Namespace(namespace).Delete(ctx, task.GetName(), metav1.DeleteOptions{
 					PropagationPolicy: &propagationPolicy,
 				})
-				if err != nil && !kerrors.IsNotFound(err) {
+				if err == nil || kerrors.IsNotFound(err) {
+					deletedTaskCount++
+				} else {
 					errs = append(errs, fmt.Errorf("failed to delete SandboxTask %s: %w", task.GetName(), err))
 				}
 			}
 		} else if !kerrors.IsNotFound(err) {
 			errs = append(errs, fmt.Errorf("failed to list SandboxTasks for selector %s: %w", selector, err))
 		}
+	}
+	if deletedTaskCount > 0 {
+		klog.Infof("Deleted %d associated SandboxTask(s) for sandbox %s.", deletedTaskCount, sandboxName)
 	}
 
 	deletedServices := make(map[string]bool)
@@ -1735,7 +1745,9 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		"sandbox.gemini.google.com/name=" + k8s.TruncateLabel(sandboxName),
 		"sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
 		"sandbox=" + k8s.TruncateLabel(sandboxName),
-		"sandbox=" + sandboxName, // Fallback for mixed-case or non-truncated legacy labels
+	}
+	if errsValid := kvalidation.IsValidLabelValue(sandboxName); len(errsValid) == 0 {
+		selectors = append(selectors, "sandbox="+sandboxName)
 	}
 
 	// Deduplicate selectors to avoid redundant API calls
@@ -1812,12 +1824,7 @@ func getMode(name string) string {
 	case "":
 		return "enabled"
 	default:
-		displayVal := val
-		runes := []rune(displayVal)
-		if len(runes) > 50 {
-			displayVal = string(runes[:47]) + "..."
-		}
-		klog.Warningf("unrecognized mode %q for environment variable %s. Defaulting to \"enabled\" for safety. Valid modes are: enabled, disabled, dryrun.", displayVal, name)
+		klog.Warningf("unrecognized mode for environment variable %s. Defaulting to \"enabled\" for safety. Valid modes are: enabled, disabled, dryrun.", name)
 		return "enabled"
 	}
 }

@@ -498,6 +498,10 @@ func createRepoWatch(cfg *Config) error {
 		fmt.Printf("  Copying secret %s → %s …\n", secret, cfg.WatchNamespace)
 		secretJSON, err := output("kubectl", "get", "secret", "-n", systemNamespace, secret, "-o", "json")
 		if err != nil {
+			if secret == "gemini-vscode-tokens" {
+				fmt.Printf("  Note: skipping optional secret %s (not found)\n", secret)
+				continue
+			}
 			return fmt.Errorf("get secret %s: %w", secret, err)
 		}
 		// Clear metadata that would prevent re-creation in another namespace.
