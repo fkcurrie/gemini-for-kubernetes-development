@@ -1724,7 +1724,17 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 		"sandbox=" + sandboxName, // Fallback for mixed-case or non-truncated legacy labels
 	}
 
-	for _, selector := range selectors {
+	// Deduplicate selectors to avoid redundant API calls
+	uniqueSelectors := make([]string, 0, len(selectors))
+	seenSelectors := make(map[string]bool)
+	for _, s := range selectors {
+		if !seenSelectors[s] {
+			seenSelectors[s] = true
+			uniqueSelectors = append(uniqueSelectors, s)
+		}
+	}
+
+	for _, selector := range uniqueSelectors {
 		listOptions := metav1.ListOptions{
 			LabelSelector: selector,
 		}
@@ -1785,8 +1795,9 @@ func getMode(name string) string {
 		return "enabled"
 	default:
 		displayVal := val
-		if len(displayVal) > 50 {
-			displayVal = displayVal[:47] + "..."
+		runes := []rune(displayVal)
+		if len(runes) > 50 {
+			displayVal = string(runes[:47]) + "..."
 		}
 		klog.Warningf("unrecognized mode %q for environment variable %s. Defaulting to \"enabled\" for safety. Valid modes are: enabled, disabled, dryrun.", displayVal, name)
 		return "enabled"

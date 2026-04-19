@@ -116,3 +116,19 @@ kubectl logs -n overseer-my-repo-agent -l sandbox=overseer-my-repo-agent -f
 ```
 
 For more details on the architecture and design, see [docs/design-overseer.md](docs/design-overseer.md).
+
+---
+
+## Upgrading
+
+### From v0.1.0-rc.3 to v0.1.0
+
+> [!IMPORTANT]
+> **Breaking Change: Gemini API Secret Key**
+> The expected key within the `gemini-api-key` secret has changed from `key` to `gemini`. Existing secrets must be updated or re-created, otherwise the Overseer agent will fail to authenticate.
+>
+> To update an existing secret:
+> ```bash
+> kubectl patch secret gemini-api-key -n overseer-system --type=json -p='[{"op": "add", "path": "/data/gemini", "value": "'$(kubectl get secret gemini-api-key -n overseer-system -o jsonpath="{.data.key}")'"}]'
+> ```
+

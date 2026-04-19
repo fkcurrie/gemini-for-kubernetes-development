@@ -76,17 +76,21 @@ func TruncateLabel(s string) string {
 
 // Slugify converts a string to a safe slug for use in Kubernetes names/labels.
 func Slugify(s string) string {
+	original := s
 	// 1. Lowercase
 	s = strings.ToLower(s)
 
 	// 2. Replace non-alphanumeric with dashes
+	// reSlugify ([^a-z0-9]+) already collapses multiple non-alphanumeric into a single dash
 	s = reSlugify.ReplaceAllString(s, "-")
 
 	// 3. Trim dashes from both ends
 	s = strings.Trim(s, "-")
 
-	// 4. Collapse multiple dashes
-	s = reDashes.ReplaceAllString(s, "-")
+	if s == "" && original != "" {
+		hash := sha256.Sum256([]byte(original))
+		return fmt.Sprintf("fallback-%x", hash[:4])
+	}
 
 	return s
 }

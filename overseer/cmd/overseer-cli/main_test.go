@@ -163,6 +163,7 @@ func TestGetMode(t *testing.T) {
 		{name: "on with spaces", envVar: "MODE11", val: "  on  ", want: "enabled"},
 		{name: "empty", envVar: "MODE12", val: "", want: "enabled"},
 		{name: "invalid defaults to enabled", envVar: "MODE13", val: "invalid", want: "enabled"},
+		{name: "long utf8", envVar: "MODE14", val: "👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋", want: "enabled"},
 	}
 
 	for _, tt := range tests {
@@ -187,9 +188,10 @@ func TestSlugify(t *testing.T) {
 		{"My-Chore-", "my-chore"},
 		{"My -- Chore", "my-chore"},
 		{"My ! Chore", "my-chore"},
-		{"My (Chore) Test", "my-chore-test"},
-		{"👋 My Chore", "my-chore"},
-	}
+		{"My_(Chore)_Test", "my-chore-test"},
+		{"👋_My_Chore", "my-chore"},
+		{"👋👋👋", "fallback-3656d98a"}, // Only non-alphanumeric
+		}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {

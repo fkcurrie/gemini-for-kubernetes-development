@@ -403,6 +403,21 @@ Delete and re-create any affected pods to force Kyverno to re-evaluate.
 
 ---
 
+## Upgrading
+
+### From v0.1.0-rc.3 to v0.1.0
+
+> [!IMPORTANT]
+> **Breaking Change: Gemini API Secret Key**
+> The expected key within the `gemini-api-key` secret has changed from `key` to `gemini`. Existing secrets must be updated or re-created, otherwise the Gemini agent will fail to authenticate.
+>
+> To update an existing secret:
+> ```bash
+> kubectl patch secret gemini-api-key -n repo-agent-system --type=json -p='[{"op": "add", "path": "/data/gemini", "value": "'$(kubectl get secret gemini-api-key -n repo-agent-system -o jsonpath="{.data.key}")'"}]'
+> ```
+
+---
+
 ## Reference
 
 | Resource | Description |
