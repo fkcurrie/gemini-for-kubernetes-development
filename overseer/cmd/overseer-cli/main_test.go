@@ -191,7 +191,7 @@ func TestSlugify(t *testing.T) {
 		{"My_(Chore)_Test", "my-chore-test"},
 		{"👋_My_Chore", "my-chore"},
 		{"👋👋👋", "fallback-3656d98a"}, // Only non-alphanumeric
-		}
+	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
