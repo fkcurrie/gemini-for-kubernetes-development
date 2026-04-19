@@ -263,7 +263,7 @@ func TestGetNumber(t *testing.T) {
 			wantPR:       0,
 		},
 		{
-			name: "name only",
+			name:         "name only",
 			labels:       map[string]string{},
 			sandboxName:  "myoverseer-pr-321",
 			overseerName: "myoverseer",
@@ -271,7 +271,7 @@ func TestGetNumber(t *testing.T) {
 			wantPR:       321,
 		},
 		{
-			name: "mismatched overseer",
+			name:         "mismatched overseer",
 			labels:       map[string]string{},
 			sandboxName:  "other-issue-123",
 			overseerName: "myoverseer",
