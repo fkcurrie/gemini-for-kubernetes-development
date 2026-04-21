@@ -36,7 +36,7 @@ func TestTruncateLabel(t *testing.T) {
 		{name: "trim dash", input: "-abc-", expected: "abc"},
 		{name: "trim dot", input: ".abc.", expected: "abc"},
 		{name: "trim mixed", input: ".-_abc_-.", expected: "abc"},
-		{name: "empty input", input: "", expected: "empty"},
+		{name: "empty input", input: "", expected: ""},
 		{name: "only non-alphanumeric triggers fallback hash", input: ".-_", expected: "fallback-3f77d544"},
 		{name: "dash dash triggers fallback hash", input: "--", expected: "fallback-d8156bae"},
 		{name: "allow dots and underscores", input: "my.label_value", expected: "my.label_value"},
@@ -64,7 +64,7 @@ func TestTruncateName(t *testing.T) {
 		{name: "unicode middle", input: "hello👋world", expected: "hello-world"},
 		{name: "invalid middle", input: "abc!@#def", expected: "abc-def"},
 		{name: "trim dash", input: "-abc-", expected: "abc"},
-		{name: "empty input", input: "", expected: "empty"},
+		{name: "empty input", input: "", expected: ""},
 		{name: "only non-alphanumeric triggers fallback hash", input: ".-_", expected: "fallback-3f77d544"},
 		{name: "disallow dots and underscores", input: "my.name_value", expected: "my-name-value"},
 	}

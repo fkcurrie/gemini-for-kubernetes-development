@@ -36,7 +36,7 @@ var (
 func TruncateLabel(s string) string {
 	original := s
 	if s == "" {
-		return "empty"
+		return ""
 	}
 
 	// 1. Lowercase and Sanitize middle characters
@@ -79,7 +79,7 @@ func TruncateLabel(s string) string {
 func TruncateName(s string) string {
 	original := s
 	if s == "" {
-		return "empty"
+		return ""
 	}
 
 	// 1. Lowercase and Replace non-alphanumeric with dashes

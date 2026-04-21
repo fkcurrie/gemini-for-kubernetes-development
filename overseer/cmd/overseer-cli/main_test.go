@@ -217,7 +217,7 @@ func TestTruncateLabel(t *testing.T) {
 		{name: "trim dash", input: "-abc-", expected: "abc"},
 		{name: "trim dot", input: ".abc.", expected: "abc"},
 		{name: "trim mixed", input: ".-_abc_-.", expected: "abc"},
-		{name: "empty input", input: "", expected: "empty"},
+		{name: "empty input", input: "", expected: ""},
 		{name: "only non-alphanumeric triggers fallback hash", input: ".-_", expected: "fallback-3f77d544"},
 		{name: "dash dash triggers fallback hash", input: "--", expected: "fallback-d8156bae"},
 	}

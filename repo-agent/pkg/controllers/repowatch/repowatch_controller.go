@@ -1323,10 +1323,11 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.
 
 // createSandboxTask creates a SandboxTask for a sandbox.
 func (r *Reconciler) createSandboxTask(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, owner client.Object, sandboxName string, name string, taskType string, params map[string]string) error {
-	taskName := k8s.TruncateName(name)
+	taskName := name
 	if taskName == "" {
-		taskName = k8s.TruncateName(fmt.Sprintf("%s-task-%d-%s", sandboxName, time.Now().Unix(), strings.ToLower(randString(4))))
+		taskName = fmt.Sprintf("%s-task-%d-%s", sandboxName, time.Now().Unix(), strings.ToLower(randString(4)))
 	}
+	taskName = k8s.TruncateName(taskName)
 
 	task := &sandboxtaskv1alpha1.SandboxTask{
 		ObjectMeta: metav1.ObjectMeta{
