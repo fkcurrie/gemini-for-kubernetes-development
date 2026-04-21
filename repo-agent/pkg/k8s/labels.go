@@ -74,6 +74,43 @@ func TruncateLabel(s string) string {
 	return s
 }
 
+// TruncateName ensures a string is a valid Kubernetes resource name (DNS-1123 label, <= 63 chars).
+// It is similar to TruncateLabel but even stricter, only allowing lowercase alphanumeric and dashes.
+func TruncateName(s string) string {
+	original := s
+	if s == "" {
+		return "empty"
+	}
+
+	// 1. Lowercase and Replace non-alphanumeric with dashes
+	s = strings.ToLower(s)
+	s = reSlugify.ReplaceAllString(s, "-")
+
+	// 2. Truncate if too long
+	truncated := false
+	if len(s) > 63 {
+		s = s[:63]
+		truncated = true
+	}
+
+	// 3. Uniqueness via hashing if truncated
+	if truncated {
+		hash := sha256.Sum256([]byte(original))
+		// Append short hash (6 hex chars). 56 bytes + 1 dash + 6 hex chars = 63 characters.
+		s = fmt.Sprintf("%s-%x", strings.TrimRight(s[:56], "-"), hash[:3])
+	}
+
+	// 4. Trim dashes from both ends
+	s = strings.Trim(s, "-")
+
+	if s == "" {
+		hash := sha256.Sum256([]byte(original))
+		return fmt.Sprintf("fallback-%x", hash[:4])
+	}
+
+	return s
+}
+
 // Slugify converts a string to a safe slug for use in Kubernetes names/labels.
 func Slugify(s string) string {
 	original := s

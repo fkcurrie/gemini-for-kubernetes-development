@@ -38,14 +38,8 @@ import (
 func ReconcileOverseer(ctx context.Context, c client.Client, o *overseerv1alpha1.Overseer, repoSandboxImage, configDirImage string) error {
 	log := log.FromContext(ctx)
 
-	overseerName := fmt.Sprintf("overseer-%s", o.Name)
-	if len(overseerName) > 63 {
-		overseerName = overseerName[:63]
-	}
-	namespace := fmt.Sprintf("overseer-%s", o.Name)
-	if len(namespace) > 63 {
-		namespace = namespace[:63]
-	}
+	overseerName := k8s.TruncateName(fmt.Sprintf("overseer-%s", o.Name))
+	namespace := k8s.TruncateName(fmt.Sprintf("overseer-%s", o.Name))
 
 	// Define the sandbox object
 	sandbox := &unstructured.Unstructured{}
@@ -357,6 +351,7 @@ func newOverseerSandboxFromOverseer(o *overseerv1alpha1.Overseer, name, namespac
 				"labels": map[string]interface{}{
 					"sandbox-type":                        "agent",
 					"overseer.gemini.google.com/overseer": k8s.TruncateLabel(o.Name),
+					"sandbox.gemini.google.com/name":      k8s.TruncateLabel(name),
 				},
 			},
 			"spec": map[string]interface{}{

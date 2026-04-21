@@ -576,7 +576,7 @@ func (m *Manager) CreateSandboxTask(ctx context.Context, namespace, sandboxName,
 	}
 
 	// Generate a name
-	name := fmt.Sprintf("%s-%d-%s", sandboxName, time.Now().Unix(), taskType)
+	name := TruncateName(fmt.Sprintf("%s-%d-%s", sandboxName, time.Now().Unix(), taskType))
 
 	task := &sandboxtaskv1alpha1.SandboxTask{
 		TypeMeta: v1.TypeMeta{

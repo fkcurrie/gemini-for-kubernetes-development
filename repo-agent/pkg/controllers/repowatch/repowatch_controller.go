@@ -1005,7 +1005,7 @@ func (r *Reconciler) isIssueMatch(issue *github.Issue, handler reviewv1alpha1.Is
 func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, issue *github.Issue) (*unstructured.Unstructured, error) {
 	log := log.FromContext(ctx)
 	// Base name matches the issue identifier
-	name := fmt.Sprintf("%s-issue-%d", repoWatch.Name, *issue.Number)
+	name := k8s.TruncateName(fmt.Sprintf("%s-issue-%d", repoWatch.Name, *issue.Number))
 
 	cloneURL := strings.Replace(*issue.RepositoryURL, "api.github.com/repos", "github.com", 1) + ".git"
 	repoParts := strings.Split(cloneURL, "/")
@@ -1076,6 +1076,8 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			Labels: map[string]string{
 				"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 				"sandbox.gemini.google.com/type":     "issue",
+				"issue.gemini.google.com/number":    fmt.Sprintf("%d", *issue.Number),
+				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
 				"sandbox-type":                       "issue",
 			},
 			Annotations: map[string]string{
@@ -1148,7 +1150,7 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 }
 
 func (r *Reconciler) ensureIssueTask(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, sandbox client.Object, sandboxName string, issue *github.Issue, handler reviewv1alpha1.IssueHandlerSpec) error {
-	taskName := fmt.Sprintf("%s-%s", sandboxName, handler.Name) // e.g. repo-issue-123-triage
+	taskName := k8s.TruncateName(fmt.Sprintf("%s-%s", sandboxName, handler.Name)) // e.g. repo-issue-123-triage
 
 	// Check if task exists
 	task := &sandboxtaskv1alpha1.SandboxTask{}
@@ -1208,7 +1210,7 @@ func (r *Reconciler) generateIssueHandlerPrompt(handler reviewv1alpha1.IssueHand
 // sandbox.
 func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, pr *github.PullRequest) error {
 	log := log.FromContext(ctx)
-	sandboxName := fmt.Sprintf("%s-pr-%d", repoWatch.Name, *pr.Number)
+	sandboxName := k8s.TruncateName(fmt.Sprintf("%s-pr-%d", repoWatch.Name, *pr.Number))
 
 	prompt := repoWatch.Spec.Review.LLM.Prompt
 
@@ -1256,6 +1258,8 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.
 			Labels: map[string]string{
 				"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 				"sandbox.gemini.google.com/type":     "review",
+				"pr.gemini.google.com/number":       fmt.Sprintf("%d", *pr.Number),
+				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(sandboxName),
 			},
 			UserLogin:   userLogin,
 			UserName:    userName,
@@ -1319,9 +1323,9 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.
 
 // createSandboxTask creates a SandboxTask for a sandbox.
 func (r *Reconciler) createSandboxTask(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, owner client.Object, sandboxName string, name string, taskType string, params map[string]string) error {
-	taskName := name
+	taskName := k8s.TruncateName(name)
 	if taskName == "" {
-		taskName = fmt.Sprintf("%s-task-%d-%s", sandboxName, time.Now().Unix(), strings.ToLower(randString(4)))
+		taskName = k8s.TruncateName(fmt.Sprintf("%s-task-%d-%s", sandboxName, time.Now().Unix(), strings.ToLower(randString(4))))
 	}
 
 	task := &sandboxtaskv1alpha1.SandboxTask{

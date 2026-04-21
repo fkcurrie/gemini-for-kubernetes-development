@@ -289,7 +289,7 @@ func runChore(ctx context.Context, name string, file string) error {
 		return fmt.Errorf("failed to convert Overseer: %w", err)
 	}
 
-	sandboxName := fmt.Sprintf("chore-%s-%s", overseer.Name, k8s.Slugify(chore.Name))
+	sandboxName := k8s.TruncateName(fmt.Sprintf("chore-%s-%s", overseer.Name, k8s.Slugify(chore.Name)))
 
 	isPaused := strings.EqualFold(chore.Schedule, "never")
 	if !isChoreAllowed(overseer.Spec.Chores, chore.Name) || isPaused {
@@ -546,7 +546,7 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		return err
 	}
 
-	sandboxName := fmt.Sprintf("%s-issue-%d", overseer.Name, number)
+	sandboxName := k8s.TruncateName(fmt.Sprintf("%s-issue-%d", overseer.Name, number))
 
 	var sandboxExists bool
 	var sandboxIsActive bool
@@ -706,7 +706,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return err
 	}
 
-	sandboxName := fmt.Sprintf("%s-pr-%d", overseer.Name, number)
+	sandboxName := k8s.TruncateName(fmt.Sprintf("%s-pr-%d", overseer.Name, number))
 	headSHA := pr.GetHead().GetSHA()
 
 	var sandboxExists bool
@@ -787,7 +787,7 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 		return fmt.Errorf("failed to get Overseer %s: %w", overseerName, err)
 	}
 
-	sandboxName := fmt.Sprintf("%s-pr-%d", overseerName, prNumber)
+	sandboxName := k8s.TruncateName(fmt.Sprintf("%s-pr-%d", overseerName, prNumber))
 
 	taskList, err := manager.ListSandboxTasks(ctx, namespace, k8s.TruncateLabel(sandboxName))
 	if err != nil {
