@@ -1076,8 +1076,8 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			Labels: map[string]string{
 				"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 				"sandbox.gemini.google.com/type":     "issue",
-				"issue.gemini.google.com/number":    fmt.Sprintf("%d", *issue.Number),
-				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"issue.gemini.google.com/number":     fmt.Sprintf("%d", *issue.Number),
+				"sandbox.gemini.google.com/name":     k8s.TruncateLabel(name),
 				"sandbox-type":                       "issue",
 			},
 			Annotations: map[string]string{
@@ -1258,8 +1258,8 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.
 			Labels: map[string]string{
 				"review.gemini.google.com/repowatch": k8s.TruncateLabel(repoWatch.Name),
 				"sandbox.gemini.google.com/type":     "review",
-				"pr.gemini.google.com/number":       fmt.Sprintf("%d", *pr.Number),
-				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(sandboxName),
+				"pr.gemini.google.com/number":        fmt.Sprintf("%d", *pr.Number),
+				"sandbox.gemini.google.com/name":     k8s.TruncateLabel(sandboxName),
 			},
 			UserLogin:   userLogin,
 			UserName:    userName,
