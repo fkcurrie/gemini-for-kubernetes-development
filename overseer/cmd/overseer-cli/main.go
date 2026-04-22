@@ -198,6 +198,16 @@ func isGitHubTransient(err error) bool {
 	if err == nil {
 		return false
 	}
+
+	var rateLimitErr *githubv39.RateLimitError
+	if errors.As(err, &rateLimitErr) {
+		return true
+	}
+	var abuseRateLimitErr *githubv39.AbuseRateLimitError
+	if errors.As(err, &abuseRateLimitErr) {
+		return true
+	}
+
 	// Check for rate limit or server errors
 	var githubErr *githubv39.ErrorResponse
 	if errors.As(err, &githubErr) {
@@ -608,6 +618,10 @@ func ensureSandbox(ctx context.Context, dynClient dynamic.Interface, namespace s
 	// To avoid stripping OwnerReferences from other controllers, we fetch existing ones and merge.
 	existing, err := dynClient.Resource(k8s.SandboxGVR).Namespace(namespace).Get(ctx, sb.GetName(), metav1.GetOptions{})
 	if err == nil {
+		if existing.GetDeletionTimestamp() != nil {
+			return nil, &RetryableError{Message: fmt.Sprintf("sandbox %s is terminating", sb.GetName())}
+		}
+
 		mergedRefs := existing.GetOwnerReferences()
 		for _, newRef := range sb.GetOwnerReferences() {
 			found := false
@@ -646,6 +660,8 @@ func ensureSandbox(ctx context.Context, dynClient dynamic.Interface, namespace s
 			"metadata": map[string]interface{}{
 				"name":            sb.GetName(),
 				"ownerReferences": sb.GetOwnerReferences(),
+				"labels":          sb.GetLabels(),
+				"annotations":     sb.GetAnnotations(),
 			},
 			"spec": sb.Object["spec"],
 		},
@@ -672,6 +688,10 @@ func ensureService(ctx context.Context, clientset kubernetes.Interface, namespac
 	var mergedRefs []metav1.OwnerReference
 	existing, err := clientset.CoreV1().Services(namespace).Get(ctx, svc.Name, metav1.GetOptions{})
 	if err == nil {
+		if existing.DeletionTimestamp != nil {
+			return &RetryableError{Message: fmt.Sprintf("service %s is terminating", svc.Name)}
+		}
+
 		// Deep copy existing owner references to avoid data races if 'existing' is from a cache.
 		mergedRefs = make([]metav1.OwnerReference, len(existing.OwnerReferences))
 		copy(mergedRefs, existing.OwnerReferences)
@@ -718,6 +738,8 @@ func ensureService(ctx context.Context, clientset kubernetes.Interface, namespac
 		"metadata": map[string]interface{}{
 			"name":            svc.Name,
 			"ownerReferences": mergedRefs,
+			"labels":          svc.Labels,
+			"annotations":     svc.Annotations,
 		},
 		"spec": map[string]interface{}{
 			"selector": svc.Spec.Selector,
@@ -1273,6 +1295,15 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		} else {
 			// Different task type or different SHA
 			if state == "Running" || state == "Pending" {
+				if taskSHA != "" && !strings.EqualFold(taskSHA, headSHA) {
+					klog.Warningf("PR #%d: Found obsolete task %s for DIFFERENT SHA %s. Deleting to avoid wasting resources.", number, task.Spec.Type, taskSHA)
+					_ = manager.UpdateSandboxTaskStatus(ctx, namespace, task.Name, "Failed", "Obsolete task deleted due to new commit", nil)
+					if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
+						klog.Warningf("Failed to delete obsolete task: %v", err)
+					}
+					return &RetryableError{Message: fmt.Sprintf("deleted obsolete task for PR %d, waiting for pod termination", number)}
+				}
+
 				if time.Since(task.CreationTimestamp.Time) < 2*time.Hour {
 					conflictMsg := fmt.Sprintf("task %s for DIFFERENT SHA %s", task.Spec.Type, taskSHA)
 					if strings.EqualFold(taskSHA, headSHA) {
