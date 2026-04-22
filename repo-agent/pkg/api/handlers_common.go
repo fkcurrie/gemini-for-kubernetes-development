@@ -287,8 +287,6 @@ func (s *Server) applyTraceabilityMetadata(c *gin.Context, body string, taskType
 	const safetyMargin = 536
 	const limit = githubLimit - safetyMargin
 
-	body = strings.TrimSpace(body)
-
 	// Identify and remove existing footer to avoid duplication and ensure it's not truncated
 	// if it was already near the limit.
 	if footerStart := strings.LastIndex(body, "<!-- repo-agent-metadata"); footerStart != -1 {
@@ -296,18 +294,18 @@ func (s *Server) applyTraceabilityMetadata(c *gin.Context, body string, taskType
 		contentBefore := body[:footerStart]
 
 		// Also remove the preceding rule if present to avoid stacking them
-		contentBefore = strings.TrimRight(contentBefore, " \t\n\r")
-		if strings.HasSuffix(contentBefore, "---") {
-			contentBefore = strings.TrimSuffix(contentBefore, "---")
-			contentBefore = strings.TrimRight(contentBefore, " \t\n\r")
+		trimmedBefore := strings.TrimRight(contentBefore, " \t\n\r")
+		if strings.HasSuffix(trimmedBefore, "---") {
+			trimmedBefore = strings.TrimSuffix(trimmedBefore, "---")
+			contentBefore = strings.TrimRight(trimmedBefore, " \t\n\r")
 		}
 
 		if footerEnd != -1 {
-			// Remove the footer and any trailing whitespace
-			body = strings.TrimSpace(contentBefore + body[footerStart+footerEnd+3:])
+			// Remove the footer
+			body = contentBefore + body[footerStart+footerEnd+3:]
 		} else {
 			// Malformed footer? Just cut from footerStart
-			body = strings.TrimSpace(contentBefore)
+			body = contentBefore
 		}
 	}
 
@@ -315,7 +313,6 @@ func (s *Server) applyTraceabilityMetadata(c *gin.Context, body string, taskType
 		klog.FromContext(c.Request.Context()).V(4).Info("Traceability metadata is disabled, skipping footer", "taskType", taskType)
 		return truncateString(body, limit)
 	}
-
 	ctx := c.Request.Context()
 	namespace := s.Auth.GetNamespaceFromContext(c)
 	if namespace == "" {

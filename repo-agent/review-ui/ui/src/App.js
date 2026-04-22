@@ -704,8 +704,8 @@ function App() {
     }).catch(err => console.error("Failed to save issue draft:", err));
   };
 
-  const handleIssueSubmit = (issueId, taskName = null, taskUID = null) => {
-    const comment = drafts[issueId] || "";
+  const handleIssueSubmit = (issueId, taskName = null, taskUID = null, overrideComment = null) => {
+    const comment = overrideComment !== null ? overrideComment : (drafts[issueId] || "");
     if (!comment.trim()) {
       alert("Please leave a comment before Submitting.");
       return;

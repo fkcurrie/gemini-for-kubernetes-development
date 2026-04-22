@@ -7,6 +7,7 @@ function TaskCard({
     parentType, // 'issues' or 'dev' or 'prs'
     handleScaleUp,
     defaultCollapsed = false,
+    handleIssueSubmit,
 }) {
     const [localDraft, setLocalDraft] = useState(task.userDraft || task.agentDraft || '');
     const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
@@ -97,6 +98,10 @@ function TaskCard({
 
     const handleSubmit = () => {
         if (parentType === 'issues') {
+            if (handleIssueSubmit) {
+                handleIssueSubmit(parentId, task.name, task.uid, localDraft);
+                return;
+            }
             fetch(`/api/repo/${repoName}/issues/${parentId}/submitcomment`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

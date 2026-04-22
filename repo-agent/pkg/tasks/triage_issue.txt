@@ -15,10 +15,6 @@ Response format:
 Please output your response starting with the Prow command.
 
 /kind <Category> <concise explanation>
-
-Issue Title: "{{.Issue.Title}}"
-Issue Body: "{{.Issue.Body}}"
-HTML URL: "{{.Issue.HTMLURL}}"
 {{- if .TraceabilityMetadataEnabled }}
 
 ---
@@ -31,3 +27,7 @@ task-type: {{ .Metadata.TaskType }}
 timestamp: {{ .Metadata.Timestamp }}
 -->
 {{- end }}
+
+Issue Title: "{{.Issue.Title}}"
+Issue Body: "{{.Issue.Body}}"
+HTML URL: "{{.Issue.HTMLURL}}"

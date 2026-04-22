@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	sandboxtaskv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/sandboxtask/v1alpha1"
 	"github.com/google/go-github/v39/github"
 	"k8s.io/klog/v2"
 )
@@ -205,4 +206,14 @@ func findMostCommonCoOccurringLabels(itemLabels [][]string) ([][]string, int) {
 	}
 
 	return result, maxCount
+}
+
+// SortSandboxTasks sorts a slice of SandboxTasks by creation timestamp (newest first).// It tie-breaks with name for stable sorting.
+func SortSandboxTasks(items []sandboxtaskv1alpha1.SandboxTask) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreationTimestamp.Equal(&items[j].CreationTimestamp) {
+			return items[i].Name > items[j].Name
+		}
+		return items[i].CreationTimestamp.After(items[j].CreationTimestamp.Time)
+	})
 }

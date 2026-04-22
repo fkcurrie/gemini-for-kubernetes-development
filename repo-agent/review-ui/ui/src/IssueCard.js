@@ -252,6 +252,7 @@ function IssueCard({
                         parentId={issue.id}
                         parentType="issues"
                         defaultCollapsed={index !== tasks.length - 1}
+                        handleIssueSubmit={handleIssueSubmit}
                     />
                 ))
             ) : (
