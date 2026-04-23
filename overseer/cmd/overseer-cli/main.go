@@ -1425,6 +1425,9 @@ func runReconcile(ctx context.Context) error {
 
 	for _, item := range sandboxList.Items {
 		labels := item.GetLabels()
+		if labels == nil {
+			labels = make(map[string]string)
+		}
 		sandboxType, found := labels["sandbox.gemini.google.com/type"]
 
 		if !found {
