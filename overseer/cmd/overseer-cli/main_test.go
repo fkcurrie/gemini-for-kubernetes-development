@@ -156,6 +156,7 @@ func TestGetMode(t *testing.T) {
 		{name: "t shorthand", envVar: "MODE7_SHORT", val: "t", want: "enabled"},
 		{name: "yes shorthand", envVar: "MODE7_YES", val: "y", want: "enabled"},
 		{name: "false", envVar: "MODE8", val: "false", want: "disabled"},
+		{name: "none", envVar: "MODE8_NONE", val: "none", want: "disabled"},
 		{name: "f shorthand", envVar: "MODE8_SHORT", val: "f", want: "disabled"},
 		{name: "no shorthand", envVar: "MODE8_NO", val: "n", want: "disabled"},
 		{name: "quoted enabled", envVar: "MODE9", val: "\"enabled\"", want: "enabled"},

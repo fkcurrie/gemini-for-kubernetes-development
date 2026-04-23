@@ -1407,12 +1407,20 @@ func runReconcile(ctx context.Context) error {
 			choresReadSuccessful = true
 		} else if os.IsNotExist(err) {
 			// If .agents doesn't exist, check if we are in the repo root to prevent accidental mass deletion
-			if _, errRepo := os.Stat(".git"); errRepo == nil {
+			repoMarkers := []string{".git", "go.mod", "Makefile", "package.json", "requirements.txt"}
+			foundMarker := ""
+			for _, marker := range repoMarkers {
+				if _, errRepo := os.Stat(marker); errRepo == nil {
+					foundMarker = marker
+					break
+				}
+			}
+
+			if foundMarker != "" {
 				choresReadSuccessful = true
-			} else if _, errRepo := os.Stat("go.mod"); errRepo == nil {
-				choresReadSuccessful = true
+				klog.V(4).Infof(".agents directory does not exist, but found repository marker %s. Assuming zero chores.", foundMarker)
 			} else {
-				klog.Warningf(".agents directory does not exist and no repository marker (.git, go.mod) found in current directory. Chore cleanup will be skipped to prevent accidental mass deletion.")
+				klog.Warningf(".agents directory does not exist and no repository marker (%s) found in current directory. Chore cleanup will be skipped to prevent accidental mass deletion.", strings.Join(repoMarkers, ", "))
 			}
 		} else {
 			klog.Warningf("failed to walk .agents directory: %v. Chore cleanup will be skipped.", err)
@@ -1562,12 +1570,12 @@ func runReconcile(ctx context.Context) error {
 
 		if deleteReason != "" {
 			if isDryRun {
-				klog.Infof("[dryrun] Sandbox %s (%s) %s. Would delete sandbox and its associated resources.", item.GetName(), sandboxType, deleteReason)
+				klog.Infof("[dryrun] Sandbox %s (%s) because %s. Would delete sandbox and its associated resources.", item.GetName(), sandboxType, deleteReason)
 			} else {
-				klog.Infof("Sandbox %s (%s) %s. Deleting.", item.GetName(), sandboxType, deleteReason)
+				klog.Infof("Sandbox %s (%s) because %s. Deleting.", item.GetName(), sandboxType, deleteReason)
 				if err := deleteSandbox(ctx, kubeClient, namespace, item.GetName()); err != nil {
 					klog.Warningf("failed to clean up resources for sandbox %s: %v", item.GetName(), err)
-					reconcileErrs = append(reconcileErrs, err)
+					reconcileErrs = append(reconcileErrs, fmt.Errorf("cleanup of sandbox %s failed: %w", item.GetName(), err))
 				}
 			}
 		}
@@ -1817,7 +1825,7 @@ func getMode(name string) string {
 	switch m {
 	case "enabled", "enable", "true", "1", "yes", "on", "t", "y":
 		return "enabled"
-	case "disabled", "disable", "false", "0", "no", "off", "f", "n":
+	case "disabled", "disable", "none", "false", "0", "no", "off", "f", "n":
 		return "disabled"
 	case "dryrun", "dry-run", "dry_run", "dry run":
 		return "dryrun"
