@@ -446,7 +446,7 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 	}
 
 	// Service
-	serviceName := sandboxName + "-lb"
+	serviceName := k8s.TruncateName(sandboxName + "-lb")
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      serviceName,

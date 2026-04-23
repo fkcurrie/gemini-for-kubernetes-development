@@ -646,29 +646,6 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 	manager := k8s.NewManager(kubeClient)
 
 	if submit {
-		klog.Infof("Validating agent draft for PR %d...", number)
-		// Basic validation: check if sandbox and completed review task exist
-		sandboxName := fmt.Sprintf("%s-pr-%d", overseerName, number)
-		taskList, err := manager.ListSandboxTasks(ctx, namespace, k8s.TruncateLabel(sandboxName))
-		if err != nil {
-			return fmt.Errorf("failed to list tasks for sandbox %s: %w", sandboxName, err)
-		}
-
-		var latestReviewTask *sandboxtaskv1alpha1.SandboxTask
-		for i := range taskList.Items {
-			task := &taskList.Items[i]
-			if task.Spec.Type == "review" && task.Status.TaskState == "Completed" {
-				if latestReviewTask == nil || task.CreationTimestamp.After(latestReviewTask.CreationTimestamp.Time) {
-					latestReviewTask = task
-				}
-			}
-		}
-
-		if latestReviewTask == nil {
-			return fmt.Errorf("no completed review task found for sandbox %s", sandboxName)
-		}
-
-		klog.Infof("Submitting agent draft for PR %d...", number)
 		return submitAgentDraft(ctx, manager, kubeClient, namespace, overseerName, number, isDryRun)
 	}
 
@@ -1038,7 +1015,7 @@ func parseRepoURL(repoURL string) (string, string, error) {
 
 func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, overseer *overseerv1alpha1.Overseer, issue *githubv39.Issue) error {
 	// Replicate logic from repowatch_controller.go:createIssueSandbox
-	name := fmt.Sprintf("%s-issue-%d", overseer.Name, issue.GetNumber())
+	name := k8s.TruncateName(fmt.Sprintf("%s-issue-%d", overseer.Name, issue.GetNumber()))
 	cloneURL := strings.Replace(issue.GetRepositoryURL(), "api.github.com/repos", "github.com", 1) + ".git"
 
 	_, repo, err := parseRepoURL(overseer.Spec.RepoURL)
@@ -1119,7 +1096,7 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 }
 
 func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, overseer *overseerv1alpha1.Overseer, pr *githubv39.PullRequest) error {
-	name := fmt.Sprintf("%s-pr-%d", overseer.Name, pr.GetNumber())
+	name := k8s.TruncateName(fmt.Sprintf("%s-pr-%d", overseer.Name, pr.GetNumber()))
 
 	_, repo, err := parseRepoURL(overseer.Spec.RepoURL)
 	if err != nil {

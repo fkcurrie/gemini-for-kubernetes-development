@@ -677,7 +677,7 @@ func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, user 
 	allPRs := append(explicitPRs, prs...)
 
 	for _, pr := range allPRs {
-		sandboxName := fmt.Sprintf("%s-pr-%d", repoWatch.Name, *pr.Number)
+		sandboxName := k8s.TruncateName(fmt.Sprintf("%s-pr-%d", repoWatch.Name, *pr.Number))
 		sandboxExists := false
 		var existingSandbox *unstructured.Unstructured
 
@@ -823,7 +823,7 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 			continue
 		}
 
-		sandboxName := fmt.Sprintf("%s-issue-%d", repoWatch.Name, *issue.Number)
+		sandboxName := k8s.TruncateName(fmt.Sprintf("%s-issue-%d", repoWatch.Name, *issue.Number))
 		validSandboxNames[sandboxName] = true
 
 		// Check if sandbox exists

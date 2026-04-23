@@ -322,7 +322,7 @@ func NewReviewSandbox(opt ReviewSandboxOptions) (*unstructured.Unstructured, *co
 		},
 	}
 
-	serviceName := fmt.Sprintf("%s-lb", sandboxName)
+	serviceName := k8s.TruncateName(fmt.Sprintf("%s-lb", sandboxName))
 	service := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "v1",
