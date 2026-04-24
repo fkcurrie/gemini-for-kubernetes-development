@@ -1,40 +1,51 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 function Settings({ onBack }) {
     const [githubPat, setGithubPat] = useState('');
     const [geminiKey, setGeminiKey] = useState('');
     const [claudeKey, setClaudeKey] = useState('');
-    const [status, setStatus] = useState({ github_pat_set: false, gemini_api_key_set: false, claude_api_key_set: false });
+    const [touched, setTouched] = useState({ github: false, gemini: false, claude: false });
+    
+    const [status, setStatus] = useState({ github_pat_set: false, gemini_api_key_set: false, claude_api_key_set: false, has_active_ai_provider: false });
     const [isLoading, setIsLoading] = useState(true);
-    const [message, setMessage] = useState({ text: '', type: '' }); // type: 'success' or 'error'
+    const [message, setMessage] = useState({ text: '', type: '' });
     const [versionInfo, setVersionInfo] = useState({ version: '...', commit: '...' });
     const [authStatus, setAuthStatus] = useState(null);
     const [targetNamespace, setTargetNamespace] = useState('');
+    const isMounted = useRef(true);
 
     useEffect(() => {
+        isMounted.current = true;
+        
         fetch('/api/settings')
-            .then(res => res.json())
+            .then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to fetch')))
             .then(data => {
-                setStatus(data);
-                setIsLoading(false);
+                if(isMounted.current) {
+                    setStatus(data);
+                    setIsLoading(false);
+                }
             })
             .catch(err => {
                 console.error("Failed to fetch settings status:", err);
-                setIsLoading(false);
+                if(isMounted.current) setIsLoading(false);
             });
         
         fetch('/api/version')
             .then(res => res.json())
-            .then(data => setVersionInfo(data))
+            .then(data => { if(isMounted.current) setVersionInfo(data) })
             .catch(err => console.error("Failed to fetch version:", err));
 
         fetch('/api/auth/status')
             .then(res => res.json())
             .then(data => {
-                setAuthStatus(data);
-                if (data.namespace) setTargetNamespace(data.namespace);
+                if(isMounted.current) {
+                    setAuthStatus(data);
+                    if (data.namespace) setTargetNamespace(data.namespace);
+                }
             })
             .catch(err => console.error("Failed to fetch auth status:", err));
+            
+        return () => { isMounted.current = false; };
     }, []);
 
     const handleSave = (e) => {
@@ -42,9 +53,9 @@ function Settings({ onBack }) {
         setMessage({ text: 'Saving...', type: 'info' });
 
         const payload = {};
-        if (githubPat) payload.github_pat = githubPat;
-        if (geminiKey) payload.gemini_api_key = geminiKey;
-        if (claudeKey) payload.claude_api_key = claudeKey;
+        if (touched.github) payload.github_pat = githubPat.trim();
+        if (touched.gemini) payload.gemini_api_key = geminiKey.trim();
+        if (touched.claude) payload.claude_api_key = claudeKey.trim();
 
         if (Object.keys(payload).length === 0) {
              setMessage({ text: 'Nothing to update.', type: 'info' });
@@ -58,26 +69,31 @@ function Settings({ onBack }) {
         })
         .then(res => {
             if (res.ok) {
-                setMessage({ text: 'Settings updated successfully!', type: 'success' });
-                setGithubPat('');
-                setGeminiKey('');
-                setClaudeKey('');
-                // Refresh status
-                fetch('/api/settings').then(r => r.json()).then(setStatus);
+                if(isMounted.current) {
+                    setMessage({ text: 'Settings updated successfully!', type: 'success' });
+                    setGithubPat('');
+                    setGeminiKey('');
+                    setClaudeKey('');
+                    setTouched({ github: false, gemini: false, claude: false });
+                }
             } else {
-                throw new Error('Failed to update settings');
+                return res.json().then(data => Promise.reject(new Error(data.error || 'Failed to update settings')));
             }
         })
         .catch(err => {
             console.error(err);
-            setMessage({ text: 'Error updating settings.', type: 'error' });
+            if(isMounted.current) setMessage({ text: err.message || 'Error updating settings.', type: 'error' });
+        })
+        .finally(() => {
+            fetch('/api/settings')
+                .then(r => r.ok ? r.json() : Promise.reject(new Error('Failed to fetch')))
+                .then(data => { if(isMounted.current) setStatus(data); })
+                .catch(err => console.error(err));
         });
     };
 
     const handleSwitchNamespace = (e) => {
         e.preventDefault();
-        
-        // If target namespace is empty, we confirm if they want to reset
         if (!targetNamespace && !window.confirm("Switching to empty namespace will reset to your default user namespace. Continue?")) return;
 
         fetch('/api/auth/switch-namespace', {
@@ -90,15 +106,15 @@ function Settings({ onBack }) {
                 window.location.reload(); 
             } else {
                 res.json().then(data => {
-                    setMessage({ text: 'Failed to switch namespace: ' + (data.error || 'Unknown error'), type: 'error' });
+                    if(isMounted.current) setMessage({ text: 'Failed to switch namespace: ' + (data.error || 'Unknown error'), type: 'error' });
                 }).catch(() => {
-                    setMessage({ text: 'Failed to switch namespace.', type: 'error' });
+                    if(isMounted.current) setMessage({ text: 'Failed to switch namespace.', type: 'error' });
                 });
             }
         })
         .catch(err => {
              console.error(err);
-             setMessage({ text: 'Error switching namespace.', type: 'error' });
+             if(isMounted.current) setMessage({ text: 'Error switching namespace.', type: 'error' });
         });
     };
 
@@ -112,13 +128,20 @@ function Settings({ onBack }) {
         })
         .then(res => {
             if (res.ok) {
-                setMessage({ text: 'Manual PAT cleared.', type: 'success' });
-                fetch('/api/settings').then(r => r.json()).then(setStatus);
+                if(isMounted.current) setMessage({ text: 'Manual PAT cleared.', type: 'success' });
             } else {
                 throw new Error('Failed to clear PAT');
             }
         })
-        .catch(err => setMessage({ text: 'Error clearing PAT.', type: 'error' }));
+        .catch(err => {
+            if(isMounted.current) setMessage({ text: 'Error clearing PAT.', type: 'error' });
+        })
+        .finally(() => {
+            fetch('/api/settings')
+                .then(r => r.ok ? r.json() : Promise.reject(new Error('Failed to fetch')))
+                .then(data => { if(isMounted.current) setStatus(data); })
+                .catch(err => console.error(err));
+        });
     };
 
     if (isLoading) return <div className="settings-container"><p>Loading settings...</p></div>;
@@ -148,15 +171,19 @@ function Settings({ onBack }) {
                         <input
                             type="password"
                             id="githubPat"
+                            name="githubPat"
+                            autoComplete="new-password"
+                            maxLength={512}
+                            aria-describedby="githubPatHelp"
                             value={githubPat}
-                            onChange={(e) => setGithubPat(e.target.value)}
-                            placeholder={status.manual_pat_set ? "Enter new PAT to overwrite" : "Enter new Manual PAT"}
+                            onChange={(e) => { setGithubPat(e.target.value); setTouched(prev => ({...prev, github: true})) }}
+                            placeholder={status.manual_pat_set ? "Set - leave blank to keep" : "Enter Manual PAT"}
                         />
                         {status.manual_pat_set && (
                             <button type="button" className="btn btn-delete btn-sm" onClick={handleClearPat} style={{marginLeft: '10px'}}>Clear Manual PAT</button>
                         )}
                     </div>
-                    <small>
+                    <small id="githubPatHelp">
                         Manual PAT takes precedence over OAuth login. 
                         You can generate a <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer">GitHub Classic PAT</a> with 'repo' (read/write) permissions.
                         {status.oauth_pat_set && !status.manual_pat_set && " You are currently using your GitHub login session."}
@@ -169,15 +196,19 @@ function Settings({ onBack }) {
                         <input
                             type="password"
                             id="geminiKey"
+                            name="geminiKey"
+                            autoComplete="new-password"
+                            maxLength={512}
+                            aria-describedby="geminiKeyHelp"
                             value={geminiKey}
-                            onChange={(e) => setGeminiKey(e.target.value)}
-                            placeholder={status.gemini_api_key_set ? "(Currently set - leave blank to keep)" : "Enter new API Key"}
+                            onChange={(e) => { setGeminiKey(e.target.value); setTouched(prev => ({...prev, gemini: true})) }}
+                            placeholder={status.gemini_api_key_set ? "Set - leave blank to keep" : "Enter API Key"}
                         />
                          <span className={`status-badge ${status.gemini_api_key_set ? 'set' : 'missing'}`}>
                             {status.gemini_api_key_set ? '✅ Configured' : '⚠️ Not Set'}
                         </span>
                     </div>
-                    <p style={{ fontSize: '0.9rem', marginTop: '5px' }}>
+                    <p id="geminiKeyHelp" style={{ fontSize: '0.9rem', marginTop: '5px' }}>
                         Required for AI-powered reviews and triage. 
                         Check your <a href="https://ai.dev/rate-limit" target="_blank" rel="noopener noreferrer">token usage</a>.
                     </p>
@@ -189,16 +220,21 @@ function Settings({ onBack }) {
                         <input
                             type="password"
                             id="claudeKey"
+                            name="claudeKey"
+                            autoComplete="new-password"
+                            maxLength={512}
+                            aria-describedby="claudeKeyHelp"
                             value={claudeKey}
-                            onChange={(e) => setClaudeKey(e.target.value)}
-                            placeholder={status.claude_api_key_set ? "(Currently set - leave blank to keep)" : "Enter new API Key"}
+                            onChange={(e) => { setClaudeKey(e.target.value); setTouched(prev => ({...prev, claude: true})) }}
+                            placeholder={status.claude_api_key_set ? "Set - leave blank to keep" : "Enter API Key"}
                         />
                          <span className={`status-badge ${status.claude_api_key_set ? 'set' : 'missing'}`}>
                             {status.claude_api_key_set ? '✅ Configured' : '⚠️ Not Set'}
                         </span>
                     </div>
-                    <p style={{ fontSize: '0.9rem', marginTop: '5px' }}>
+                    <p id="claudeKeyHelp" style={{ fontSize: '0.9rem', marginTop: '5px' }}>
                         Required for Claude-powered analysis.
+                        You can generate it from the <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">Anthropic API console</a>.
                     </p>
                 </div>
 

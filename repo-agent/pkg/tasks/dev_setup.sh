@@ -80,10 +80,10 @@ function setupGitRepos {
         (cd "/workspaces/${REPO_NAME}" && gh repo sync "${GITHUB_USER_ID}/${REPO_NAME}" --force)
         
         # Ensure we have all branches from upstream
-        (cd "/workspaces/${REPO_NAME}" && git fetch upstream && git fetch origin)
+        (cd "/workspaces/${REPO_NAME}" && git fetch upstream || true && git fetch origin)
     else
         echo "repository already exists, fetching latest changes..."
-        (cd "/workspaces/${REPO_NAME}" && git fetch origin && git fetch upstream)
+        (cd "/workspaces/${REPO_NAME}" && git fetch origin && git fetch upstream || true)
     fi
 }
 

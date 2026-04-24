@@ -99,16 +99,15 @@ RUN curl -fsSL https://code-server.dev/install.sh | sh && \
 
 # -------- Install Go tools --------
 # Install yq
-RUN go install github.com/mikefarah/yq/v4@latest && \
-    ln -s $(go env GOPATH)/bin/yq /usr/local/bin/yq
+RUN curl -L "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq && \
+    chmod +x /usr/local/bin/yq
 
 # Install setup-envtest and download assets
 RUN go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22 && \
-    $(go env GOPATH)/bin/setup-envtest use
+    KUBEBUILDER_PATH="$($(go env GOPATH)/bin/setup-envtest use -p path)" && \
+    ln -s "$KUBEBUILDER_PATH" /usr/local/kubebuilder-envtest
 
-# (Optional) Export KUBEBUILDER_ASSETS so it's available for 'go test' automatically.
-# The path below is the default location setup-envtest extracts the binaries to.
-ENV KUBEBUILDER_ASSETS=/root/.local/share/kubebuilder-envtest/k8s/1.35.0-linux-amd64
+ENV KUBEBUILDER_ASSETS=/usr/local/kubebuilder-envtest
 
 COPY --from=build-gh /bin/gh /bin/gh
 COPY repo-agent/scripts/start-dockerd.sh /usr/local/bin/start-dockerd.sh

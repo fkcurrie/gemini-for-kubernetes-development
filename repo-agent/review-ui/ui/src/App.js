@@ -25,8 +25,7 @@ function App() {
   const [showGithubConfig, setShowGithubConfig] = useState(false);
   const [githubClientId, setGithubClientId] = useState('');
   const [githubClientSecret, setGithubClientSecret] = useState('');
-  const [isGeminiKeySet, setIsGeminiKeySet] = useState(true); // Default to true to avoid flash of warning
-  const [isClaudeKeySet, setIsClaudeKeySet] = useState(true);
+  const [hasActiveAIProvider, setHasActiveAIProvider] = useState(true);
   const [configError, setConfigError] = useState('');
 
   const [repos, setRepos] = useState([]);
@@ -149,16 +148,7 @@ function App() {
 
   useEffect(() => {
     if (isAuthenticated || isGuest) {
-      fetch('/api/settings')
-        .then(res => res.json())
-        .then(data => {
-          setIsGeminiKeySet(data.gemini_api_key_set);
-          setIsClaudeKeySet(data.claude_api_key_set);
-          if (!data.gemini_api_key_set && !data.claude_api_key_set && !hasRedirectedMissingKey.current && isAuthenticated) {
-            hasRedirectedMissingKey.current = true;
-            setView('settings');
-          }
-        })
+      fetch('/api/settings').then(res => res.ok ? res.json() : Promise.reject(new Error('Failed to fetch settings'))).then(data => { const hasAI = data.has_active_ai_provider ?? (data.gemini_api_key_set || data.claude_api_key_set); setHasActiveAIProvider(hasAI); if (!hasAI && !hasRedirectedMissingKey.current && isAuthenticated) { hasRedirectedMissingKey.current = true; setView('settings'); } })
         .catch(err => console.error("Failed to fetch settings:", err));
     }
   }, [isAuthenticated, isGuest]);
@@ -1312,12 +1302,7 @@ function App() {
           </button>
         ))}
         <button className="tab-btn add-repo-btn" onClick={() => {
-          if (!isGeminiKeySet && !isClaudeKeySet && !isGuest) {
-            alert("Please set your Gemini or Claude API Key in Settings before adding a repository.");
-            setView('settings');
-          } else {
-            setView('add_repo');
-          }
+          if (!hasActiveAIProvider) { setConfigError('Please set your AI Provider API Key in Settings before adding a repository.'); setView('add_repo'); } else { setConfigError(''); setView('add_repo'); }
         }} title="Watch new repository">+</button>
       </nav>
       {activeRepo && (
@@ -1418,11 +1403,7 @@ function App() {
         </div>
       </header>
       
-      {(isAuthenticated || isGuest) && !isGeminiKeySet && !isClaudeKeySet && (
-        <div className="warning-banner">
-          <strong>⚠️ API Keys Missing:</strong> Please configure your Gemini or Claude API Key in <a href="#" onClick={(e) => { e.preventDefault(); setView('settings'); }}>Settings</a> to enable code reviews and issue handling.
-        </div>
-      )}
+      {(isAuthenticated || isGuest) && !hasActiveAIProvider && (<div className="warning-banner"><strong>⚠️ API Key Missing:</strong> Please configure your AI Provider API Key in <a href="#" onClick={(e) => { e.preventDefault(); setView('settings'); }}>Settings</a> to enable code reviews and issue handling.</div>)}{configError && (<div className="error-banner" style={{background: '#f8d7da', color: '#721c24', padding: '10px', margin: '10px 20px', borderRadius: '4px'}}><strong>⚠️ Error:</strong> {configError} <button onClick={() => setConfigError('')} style={{float: 'right', background: 'none', border: 'none', color: '#721c24', cursor: 'pointer'}}>✖</button></div>)}
 
       {activeRepo && activeRepo.conditions && activeRepo.conditions.filter(c => c.status === 'False').map((c, i) => (
         <div key={i} className="warning-banner" style={{ backgroundColor: '#fdecea', color: '#721c24', borderColor: '#f5c6cb' }}>

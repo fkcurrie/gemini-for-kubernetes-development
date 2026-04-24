@@ -1544,7 +1544,7 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 		// Check if sandbox exists
 		sandboxExists := false
 		for _, ws := range watchedDevSandboxes {
-			if ws.SandboxName == sandboxName {
+			if ws.BranchName == branchName {
 				sandboxExists = true
 				break
 			}
