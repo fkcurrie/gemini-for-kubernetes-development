@@ -251,6 +251,17 @@ func isGitHubTransient(err error) bool {
 		strings.Contains(errStr, "client.timeout exceeded")
 }
 
+// getTaskTime returns the most relevant timestamp for a task based on its state.
+func getTaskTime(task *sandboxtaskv1alpha1.SandboxTask) time.Time {
+	if task.Status.CompletionTime != nil {
+		return task.Status.CompletionTime.Time
+	}
+	if task.Status.StartTime != nil {
+		return task.Status.StartTime.Time
+	}
+	return task.CreationTimestamp.Time
+}
+
 func isBot(login, botLogin, userLogin string) bool {
 	if login == "" {
 		return false
@@ -261,21 +272,18 @@ func isBot(login, botLogin, userLogin string) bool {
 		if target == "" {
 			return false
 		}
-		// Exact match first
-		if strings.EqualFold(login, target) {
+		targetLower := strings.ToLower(target)
+		loginLower := strings.ToLower(login)
+
+		if loginLower == targetLower {
 			return true
 		}
-		// Try trimming standard [bot] suffix from both
-		t1 := strings.ToLower(strings.TrimSuffix(login, "[bot]"))
-		t2 := strings.ToLower(strings.TrimSuffix(target, "[bot]"))
-		if t1 == t2 {
+
+		targetTrimmed := strings.TrimSuffix(targetLower, "[bot]")
+		if loginLower == targetTrimmed+"[bot]" {
 			return true
 		}
-		// Custom suffix formats (e.g. my-app[bot]-test)
-		// If login contains [bot], we check if it starts with target (trimmed)
-		if t2 != "" && strings.Contains(login, "[bot]") && strings.HasPrefix(strings.ToLower(login), t2) {
-			return true
-		}
+
 		return false
 	}
 
@@ -425,22 +433,22 @@ func runChore(ctx context.Context, name string, file string) error {
 				return &RetryableError{Message: fmt.Sprintf("task %s for chore %s is still terminating, waiting", task.Name, chore.Name)}
 			}
 			if state == "Completed" {
-				if time.Since(task.CreationTimestamp.Time) < 2*time.Minute {
-					klog.V(2).Infof("Chore %s: Task already exists in state %s (created %v ago). Skipping.", chore.Name, state, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 2*time.Minute {
+					klog.V(2).Infof("Chore %s: Task already exists in state %s (created %v ago). Skipping.", chore.Name, state, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Infof("Chore %s: Found old Completed task (%v ago). Deleting to allow periodic run.", chore.Name, time.Since(task.CreationTimestamp.Time))
+				klog.Infof("Chore %s: Found old Completed task (%v ago). Deleting to allow periodic run.", chore.Name, time.Since(getTaskTime(task)))
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Chore %s: Failed to delete old completed task: %v", chore.Name, err)
 				}
 				// Fall through to create new task
 			}
 			if state == "Running" || state == "Pending" {
-				if time.Since(task.CreationTimestamp.Time) < 2*time.Hour {
-					klog.V(2).Infof("Chore %s: Task already exists in state %s (created %v ago). Skipping.", chore.Name, state, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 2*time.Hour {
+					klog.V(2).Infof("Chore %s: Task already exists in state %s (created %v ago). Skipping.", chore.Name, state, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Warningf("Chore %s: Found STALE task in state %s (created %v ago). Deleting stale task and allowing new one.", chore.Name, state, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("Chore %s: Found STALE task in state %s (created %v ago). Deleting stale task and allowing new one.", chore.Name, state, time.Since(getTaskTime(task)))
 				_ = manager.UpdateSandboxTaskStatus(ctx, namespace, task.Name, "Failed", "Stale task deleted for retry", nil)
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Chore %s: Failed to delete stale task: %v", chore.Name, err)
@@ -448,11 +456,11 @@ func runChore(ctx context.Context, name string, file string) error {
 				return &RetryableError{Message: fmt.Sprintf("deleted stale task for chore %s, waiting for pod termination", chore.Name)}
 			}
 			if state == "Failed" {
-				if time.Since(task.CreationTimestamp.Time) < 1*time.Hour {
-					klog.V(2).Infof("Chore %s: Task failed recently (%v ago). Skipping for backoff.", chore.Name, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 1*time.Hour {
+					klog.V(2).Infof("Chore %s: Task failed recently (%v ago). Skipping for backoff.", chore.Name, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Warningf("Chore %s: Found old Failed task (%v ago). Deleting to allow retry.", chore.Name, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("Chore %s: Found old Failed task (%v ago). Deleting to allow retry.", chore.Name, time.Since(getTaskTime(task)))
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Chore %s: Failed to delete failed task: %v", chore.Name, err)
 				}
@@ -962,11 +970,11 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 				return nil
 			}
 			if state == "Running" || state == "Pending" {
-				if time.Since(task.CreationTimestamp.Time) < 2*time.Hour {
-					klog.V(2).Infof("Issue #%d: Task %s already exists in state %s (created %v ago). Skipping.", number, taskType, state, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 2*time.Hour {
+					klog.V(2).Infof("Issue #%d: Task %s already exists in state %s (created %v ago). Skipping.", number, taskType, state, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Warningf("Issue #%d: Found STALE task %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, taskType, state, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("Issue #%d: Found STALE task %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, taskType, state, time.Since(getTaskTime(task)))
 				_ = manager.UpdateSandboxTaskStatus(ctx, namespace, task.Name, "Failed", "Stale task deleted for retry", nil)
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Issue #%d: Failed to delete stale task: %v", number, err)
@@ -974,11 +982,11 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 				return &RetryableError{Message: fmt.Sprintf("deleted stale task for issue %d, waiting for pod termination", number)}
 			}
 			if state == "Failed" {
-				if time.Since(task.CreationTimestamp.Time) < 1*time.Hour {
-					klog.V(2).Infof("Issue #%d: Task %s failed recently (%v ago). Skipping for backoff.", number, taskType, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 1*time.Hour {
+					klog.V(2).Infof("Issue #%d: Task %s failed recently (%v ago). Skipping for backoff.", number, taskType, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Warningf("Issue #%d: Found old Failed task %s (%v ago). Deleting to allow retry.", number, taskType, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("Issue #%d: Found old Failed task %s (%v ago). Deleting to allow retry.", number, taskType, time.Since(getTaskTime(task)))
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Issue #%d: Failed to delete failed task: %v", number, err)
 				}
@@ -987,11 +995,11 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		} else {
 			// Different task type in the same sandbox
 			if state == "Running" || state == "Pending" {
-				if time.Since(task.CreationTimestamp.Time) < 2*time.Hour {
-					klog.V(2).Infof("Issue #%d: Task %s is currently %s (created %v ago). Skipping to avoid concurrency conflict.", number, task.Spec.Type, state, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 2*time.Hour {
+					klog.V(2).Infof("Issue #%d: Task %s is currently %s (created %v ago). Skipping to avoid concurrency conflict.", number, task.Spec.Type, state, time.Since(getTaskTime(task)))
 					return &RetryableError{Message: fmt.Sprintf("another task %s is running in sandbox for issue %d", task.Spec.Type, number)}
 				}
-				klog.Warningf("Issue #%d: Found STALE task %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, task.Spec.Type, state, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("Issue #%d: Found STALE task %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, task.Spec.Type, state, time.Since(getTaskTime(task)))
 				_ = manager.UpdateSandboxTaskStatus(ctx, namespace, task.Name, "Failed", "Stale task deleted for retry", nil)
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Failed to delete stale task: %v", err)
@@ -1266,11 +1274,11 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		taskSHA := task.Spec.Params["HEAD_SHA"]
 		if task.Spec.Type == taskType && strings.EqualFold(taskSHA, headSHA) {
 			if state == "Running" || state == "Pending" {
-				if time.Since(task.CreationTimestamp.Time) < 2*time.Hour {
-					klog.V(2).Infof("PR #%d: Task %s for SHA %s already exists in state %s (created %v ago). Skipping.", number, taskType, headSHA, state, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 2*time.Hour {
+					klog.V(2).Infof("PR #%d: Task %s for SHA %s already exists in state %s (created %v ago). Skipping.", number, taskType, headSHA, state, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Warningf("PR #%d: Found STALE task %s for SHA %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, taskType, headSHA, state, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("PR #%d: Found STALE task %s for SHA %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, taskType, headSHA, state, time.Since(getTaskTime(task)))
 				_ = manager.UpdateSandboxTaskStatus(ctx, namespace, task.Name, "Failed", "Stale task deleted for retry", nil)
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Failed to delete stale task: %v", err)
@@ -1282,11 +1290,11 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 					klog.Infof("PR #%d: Found historical failed task %s for SHA %s, but PR was reopened since then. Proceeding with new task.", number, taskType, headSHA)
 					continue
 				}
-				if time.Since(task.CreationTimestamp.Time) < 1*time.Hour {
-					klog.V(2).Infof("PR #%d: Task %s for SHA %s failed recently (%v ago). Skipping for backoff.", number, taskType, headSHA, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 1*time.Hour {
+					klog.V(2).Infof("PR #%d: Task %s for SHA %s failed recently (%v ago). Skipping for backoff.", number, taskType, headSHA, time.Since(getTaskTime(task)))
 					return nil
 				}
-				klog.Warningf("PR #%d: Found old Failed task %s for SHA %s (%v ago). Deleting to allow retry.", number, taskType, headSHA, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("PR #%d: Found old Failed task %s for SHA %s (%v ago). Deleting to allow retry.", number, taskType, headSHA, time.Since(getTaskTime(task)))
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Failed to delete stale task: %v", err)
 				}
@@ -1304,15 +1312,15 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 					return &RetryableError{Message: fmt.Sprintf("deleted obsolete task for PR %d, waiting for pod termination", number)}
 				}
 
-				if time.Since(task.CreationTimestamp.Time) < 2*time.Hour {
+				if time.Since(getTaskTime(task)) < 2*time.Hour {
 					conflictMsg := fmt.Sprintf("task %s for DIFFERENT SHA %s", task.Spec.Type, taskSHA)
 					if strings.EqualFold(taskSHA, headSHA) {
 						conflictMsg = fmt.Sprintf("task %s for SAME SHA %s", task.Spec.Type, headSHA)
 					}
-					klog.V(2).Infof("PR #%d: %s is currently %s (created %v ago). Skipping to avoid concurrency conflict.", number, conflictMsg, state, time.Since(task.CreationTimestamp.Time))
+					klog.V(2).Infof("PR #%d: %s is currently %s (created %v ago). Skipping to avoid concurrency conflict.", number, conflictMsg, state, time.Since(getTaskTime(task)))
 					return &RetryableError{Message: fmt.Sprintf("another task is running in sandbox for PR %d, waiting for it to finish", number)}
 				}
-				klog.Warningf("PR #%d: Found STALE task %s for SHA %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, task.Spec.Type, taskSHA, state, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("PR #%d: Found STALE task %s for SHA %s in state %s (created %v ago). Deleting stale task and allowing new one.", number, task.Spec.Type, taskSHA, state, time.Since(getTaskTime(task)))
 				_ = manager.UpdateSandboxTaskStatus(ctx, namespace, task.Name, "Failed", "Stale task deleted for retry", nil)
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("Failed to delete stale task: %v", err)
@@ -1431,8 +1439,8 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 			if taskType == "review" {
 				// Review task is Completed but NOT on GitHub.
 				// If it was created recently, we wait for submitAgentDraft to do its job.
-				if time.Since(task.CreationTimestamp.Time) < 30*time.Minute {
-					klog.V(2).Infof("PR #%d: Review task for SHA %s is Completed but not yet on GitHub. Waiting for submission (created %v ago).", number, headSHA, time.Since(task.CreationTimestamp.Time))
+				if time.Since(getTaskTime(task)) < 30*time.Minute {
+					klog.V(2).Infof("PR #%d: Review task for SHA %s is Completed but not yet on GitHub. Waiting for submission (created %v ago).", number, headSHA, time.Since(getTaskTime(task)))
 					if eventsFetchSuccess {
 						if err := updateSandboxCheckpoints(ctx, manager, namespace, sandboxName, lastReopenedAt, pr.GetUpdatedAt()); err != nil {
 							return fmt.Errorf("failed to update checkpoints for PR #%d: %w", number, err)
@@ -1442,7 +1450,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 				}
 
 				// If it's old, it might be stuck (e.g. failed submission). allow retry.
-				klog.Warningf("PR #%d: Review task for SHA %s is Completed but not on GitHub after %v. Deleting to allow retry.", number, headSHA, time.Since(task.CreationTimestamp.Time))
+				klog.Warningf("PR #%d: Review task for SHA %s is Completed but not on GitHub after %v. Deleting to allow retry.", number, headSHA, time.Since(getTaskTime(task)))
 				if err := manager.DeleteSandboxTask(ctx, namespace, task.Name); err != nil {
 					klog.Warningf("PR #%d: Failed to delete stuck completed task: %v", number, err)
 				}
@@ -1523,7 +1531,7 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 	for i := range taskList.Items {
 		task := &taskList.Items[i]
 		if task.Spec.Type == "review" && task.Status.TaskState == "Completed" {
-			if latestReviewTask == nil || task.CreationTimestamp.After(latestReviewTask.CreationTimestamp.Time) {
+			if latestReviewTask == nil || getTaskTime(task).After(getTaskTime(latestReviewTask)) {
 				latestReviewTask = task
 			}
 		}
@@ -1652,7 +1660,7 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 		if errors.As(err, &githubErr) && githubErr.Response != nil && githubErr.Response.StatusCode == 422 {
 			retryCount := 0
 			if sandboxUnstructured != nil {
-				if val, ok := sandboxUnstructured.GetAnnotations()["failedSubmissions:"+currentSHA]; ok {
+				if val, ok := sandboxUnstructured.GetAnnotations()["failed-submissions-"+currentSHA]; ok {
 					_, _ = fmt.Sscanf(val, "%d", &retryCount)
 				}
 			}
@@ -1671,8 +1679,8 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 			}
 
 			klog.Warningf("GitHub rejected review for PR %d with 422 (likely invalid line references). Deleting task %s to allow re-trigger (retry %d/%d).", prNumber, latestReviewTask.Name, retryCount+1, maxRetries)
-			if err := manager.UpdateSandboxAnnotation(ctx, namespace, sandboxName, "failedSubmissions:"+currentSHA, fmt.Sprintf("%d", retryCount+1)); err != nil {
-				return fmt.Errorf("failed to update failedSubmissions annotation: %w", err)
+			if err := manager.UpdateSandboxAnnotation(ctx, namespace, sandboxName, "failed-submissions-"+currentSHA, fmt.Sprintf("%d", retryCount+1)); err != nil {
+				return fmt.Errorf("failed to update failed-submissions annotation: %w", err)
 			}
 			if err := manager.DeleteSandboxTask(ctx, namespace, latestReviewTask.Name); err != nil {
 				return fmt.Errorf("failed to delete task after 422 error: %w", err)
