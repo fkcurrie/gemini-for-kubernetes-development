@@ -189,6 +189,7 @@ func TestSlugify(t *testing.T) {
 		{"My-Chore-", "my-chore"},
 		{"My -- Chore", "my-chore"},
 		{"My ! Chore", "my-chore"},
+		{"", "fallback-e3b0c442"},
 		{"My_(Chore)_Test", "my-chore-test"},
 		{"👋_My_Chore", "my-chore"},
 		{"👋👋👋", "fallback-3656d98a"}, // Only non-alphanumeric
@@ -218,7 +219,7 @@ func TestTruncateLabel(t *testing.T) {
 		{name: "trim dash", input: "-abc-", expected: "abc"},
 		{name: "trim dot", input: ".abc.", expected: "abc"},
 		{name: "trim mixed", input: ".-_abc_-.", expected: "abc"},
-		{name: "empty input", input: "", expected: ""},
+		{name: "empty input", input: "", expected: "fallback-e3b0c442"},
 		{name: "only non-alphanumeric triggers fallback hash", input: ".-_", expected: "fallback-3f77d544"},
 		{name: "dash dash triggers fallback hash", input: "--", expected: "fallback-d8156bae"},
 	}

@@ -95,6 +95,7 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 	// Ensure sandbox label matches for service selector
 	labels["sandbox"] = k8s.TruncateLabel(sandboxName)
 	labels["sandbox.gemini.google.com/name"] = k8s.TruncateLabel(sandboxName)
+	labels["sandbox.gemini.google.com/sandbox-name"] = k8s.TruncateLabel(sandboxName)
 	// Default type to issue if not set
 	if _, ok := labels["sandbox-type"]; !ok {
 		labels["sandbox-type"] = "issue"

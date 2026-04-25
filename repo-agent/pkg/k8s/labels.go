@@ -36,7 +36,8 @@ var (
 func TruncateLabel(s string) string {
 	original := s
 	if s == "" {
-		return ""
+		hash := sha256.Sum256([]byte(original))
+		return fmt.Sprintf("fallback-%x", hash[:4])
 	}
 
 	// 1. Lowercase and Sanitize middle characters
@@ -79,7 +80,8 @@ func TruncateLabel(s string) string {
 func TruncateName(s string) string {
 	original := s
 	if s == "" {
-		return ""
+		hash := sha256.Sum256([]byte(original))
+		return fmt.Sprintf("fallback-%x", hash[:4])
 	}
 
 	// 1. Lowercase and Replace non-alphanumeric with dashes
@@ -124,7 +126,7 @@ func Slugify(s string) string {
 	// 3. Trim dashes from both ends
 	s = strings.Trim(s, "-")
 
-	if s == "" && original != "" {
+	if s == "" {
 		hash := sha256.Sum256([]byte(original))
 		return fmt.Sprintf("fallback-%x", hash[:4])
 	}

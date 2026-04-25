@@ -417,6 +417,7 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 				"sandbox.gemini.google.com/type":    "chore",
 				"chore.gemini.google.com/name":      k8s.TruncateLabel(k8s.Slugify(chore.Name)),
 				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(sandboxName),
+				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandboxName),
 				"sandbox":                           k8s.TruncateLabel(sandboxName), // Legacy support
 			},
 			CloneURL:            cloneURL,
@@ -1046,6 +1047,7 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 				"sandbox.gemini.google.com/type":    "issue",
 				"issue.gemini.google.com/number":    fmt.Sprintf("%d", issue.GetNumber()),
 				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(name),
 				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
 			},
 			CloneURL:            cloneURL,
@@ -1128,6 +1130,7 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 				"sandbox.gemini.google.com/type":    "review",
 				"pr.gemini.google.com/number":       fmt.Sprintf("%d", pr.GetNumber()),
 				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(name),
 				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
 			},
 			UserLogin:             githubUserLogin,
@@ -1692,6 +1695,7 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 
 	taskSelectors := []string{
 		"sandbox.gemini.google.com/sandbox-name=" + k8s.TruncateLabel(sandboxName),
+		"sandbox.gemini.google.com/name=" + k8s.TruncateLabel(sandboxName),
 		"sandbox=" + k8s.TruncateLabel(sandboxName),
 	}
 	// Fallback to raw label only if it is a valid Kubernetes label value
