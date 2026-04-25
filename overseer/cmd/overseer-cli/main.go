@@ -413,12 +413,12 @@ func createChoreSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 			Name:      sandboxName,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
-				"sandbox.gemini.google.com/type":    "chore",
-				"chore.gemini.google.com/name":      k8s.TruncateLabel(k8s.Slugify(chore.Name)),
-				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(sandboxName),
+				"review.gemini.google.com/overseer":      k8s.TruncateLabel(overseer.Name),
+				"sandbox.gemini.google.com/type":         "chore",
+				"chore.gemini.google.com/name":           k8s.TruncateLabel(k8s.Slugify(chore.Name)),
+				"sandbox.gemini.google.com/name":         k8s.TruncateLabel(sandboxName),
 				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandboxName),
-				"sandbox":                           k8s.TruncateLabel(sandboxName), // Legacy support
+				"sandbox":                                k8s.TruncateLabel(sandboxName), // Legacy support
 			},
 			CloneURL:            cloneURL,
 			HTMLURL:             strings.TrimSuffix(overseer.Spec.RepoURL, ".git"),
@@ -1043,12 +1043,12 @@ func createIssueSandbox(ctx context.Context, kubeClient *clients.KubernetesClien
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
-				"sandbox.gemini.google.com/type":    "issue",
-				"issue.gemini.google.com/number":    fmt.Sprintf("%d", issue.GetNumber()),
-				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"review.gemini.google.com/overseer":      k8s.TruncateLabel(overseer.Name),
+				"sandbox.gemini.google.com/type":         "issue",
+				"issue.gemini.google.com/number":         fmt.Sprintf("%d", issue.GetNumber()),
+				"sandbox.gemini.google.com/name":         k8s.TruncateLabel(name),
 				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(name),
-				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
+				"sandbox":                                k8s.TruncateLabel(name), // Legacy support
 			},
 			CloneURL:            cloneURL,
 			HTMLURL:             issue.GetHTMLURL(),
@@ -1126,12 +1126,12 @@ func createPRSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, 
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"review.gemini.google.com/overseer": k8s.TruncateLabel(overseer.Name),
-				"sandbox.gemini.google.com/type":    "review",
-				"pr.gemini.google.com/number":       fmt.Sprintf("%d", pr.GetNumber()),
-				"sandbox.gemini.google.com/name":    k8s.TruncateLabel(name),
+				"review.gemini.google.com/overseer":      k8s.TruncateLabel(overseer.Name),
+				"sandbox.gemini.google.com/type":         "review",
+				"pr.gemini.google.com/number":            fmt.Sprintf("%d", pr.GetNumber()),
+				"sandbox.gemini.google.com/name":         k8s.TruncateLabel(name),
 				"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(name),
-				"sandbox":                           k8s.TruncateLabel(name), // Legacy support
+				"sandbox":                                k8s.TruncateLabel(name), // Legacy support
 			},
 			UserLogin:             githubUserLogin,
 			UserName:              githubUserName,
@@ -1522,7 +1522,7 @@ func runReconcile(ctx context.Context) error {
 			if reviewMode == "disabled" && prMode == "disabled" {
 				deleteReason = "both PR and Review handling are disabled"
 			} else {
-				// Combined dry-run logic for shared sandbox type: if either mode is enabled, 
+				// Combined dry-run logic for shared sandbox type: if either mode is enabled,
 				// mutations are allowed (subject to global dryRun).
 				isDryRun = dryRun || (reviewMode != "enabled" && prMode != "enabled")
 

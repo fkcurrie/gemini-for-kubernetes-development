@@ -349,9 +349,9 @@ func newOverseerSandboxFromOverseer(o *overseerv1alpha1.Overseer, name, namespac
 				"name":      name,
 				"namespace": namespace,
 				"labels": map[string]interface{}{
-					"sandbox-type":                        "agent",
-					"overseer.gemini.google.com/overseer": k8s.TruncateLabel(o.Name),
-					"sandbox.gemini.google.com/name":      k8s.TruncateLabel(name),
+					"sandbox-type":                           "agent",
+					"overseer.gemini.google.com/overseer":    k8s.TruncateLabel(o.Name),
+					"sandbox.gemini.google.com/name":         k8s.TruncateLabel(name),
 					"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(name),
 				},
 			},
