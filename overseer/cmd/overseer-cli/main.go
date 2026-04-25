@@ -280,11 +280,8 @@ func isBot(login, botLogin, userLogin string) bool {
 		}
 
 		targetTrimmed := strings.TrimSuffix(targetLower, "[bot]")
-		if loginLower == targetTrimmed+"[bot]" {
-			return true
-		}
-
-		return false
+		loginTrimmed := strings.TrimSuffix(loginLower, "[bot]")
+		return loginTrimmed == targetTrimmed
 	}
 
 	return check(botLogin) || check(userLogin)
