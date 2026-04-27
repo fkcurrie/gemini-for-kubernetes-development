@@ -1431,10 +1431,7 @@ func runReconcile(ctx context.Context) error {
 		if labels == nil {
 			labels = make(map[string]string)
 		}
-		sandboxType, found, err := unstructured.NestedString(item.Object, "metadata", "labels", "sandbox.gemini.google.com/type")
-		if err != nil {
-			klog.V(4).Infof("failed to extract sandbox type from labels for %s: %v", item.GetName(), err)
-		}
+		sandboxType, found := labels["sandbox.gemini.google.com/type"]
 
 		if !found {
 			klog.V(4).Infof("Sandbox %s lacks type label. Falling back to name inference.", item.GetName())
