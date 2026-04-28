@@ -92,7 +92,7 @@ func (s *Server) getOverseerLogs(c *gin.Context) {
 
 	// Find pod by label
 	pods, err := s.K8sManager.Clientset.CoreV1().Pods(namespace).List(c.Request.Context(), v1.ListOptions{
-		LabelSelector: fmt.Sprintf("sandbox=%s", k8s.TruncateName(fmt.Sprintf("overseer-%s", name))),
+		LabelSelector: fmt.Sprintf("sandbox.gemini.google.com/sandbox-name=%s", k8s.TruncateLabel(k8s.TruncateName(fmt.Sprintf("overseer-%s", name)))),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Overseer pod not found"})
@@ -120,7 +120,7 @@ func (s *Server) getOverseerLogs(c *gin.Context) {
 
 func (s *Server) getChoreLogs(c *gin.Context) {
 	overseerName := c.Param("name")
-	choreSandboxName := c.Param("name")
+	choreSandboxName := c.Param("choreName")
 	taskID := c.Query("taskID")
 
 	namespace := k8s.TruncateName(fmt.Sprintf("overseer-%s", overseerName))
@@ -150,7 +150,7 @@ func (s *Server) getChoreLogs(c *gin.Context) {
 
 	// Find pod by label
 	pods, err := s.K8sManager.Clientset.CoreV1().Pods(namespace).List(c.Request.Context(), v1.ListOptions{
-		LabelSelector: fmt.Sprintf("sandbox=%s", choreSandboxName),
+		LabelSelector: fmt.Sprintf("sandbox.gemini.google.com/sandbox-name=%s", k8s.TruncateLabel(choreSandboxName)),
 	})
 	if err != nil || len(pods.Items) == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Chore pod not found"})

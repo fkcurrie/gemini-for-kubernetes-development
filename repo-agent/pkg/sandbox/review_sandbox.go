@@ -249,7 +249,8 @@ func NewReviewSandbox(opt ReviewSandboxOptions) (*unstructured.Unstructured, *co
 				"podTemplate": map[string]interface{}{
 					"metadata": map[string]interface{}{
 						"labels": map[string]interface{}{
-							"sandbox": k8s.TruncateLabel(sandboxName),
+							"sandbox":                                k8s.TruncateLabel(sandboxName),
+							"sandbox.gemini.google.com/sandbox-name": k8s.TruncateLabel(sandboxName),
 						},
 					},
 					"spec": map[string]interface{}{
