@@ -324,7 +324,7 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 							containers = append(containers, map[string]interface{}{
 								"name":    "inject-agent",
 								"image":   opt.RepoSandboxImage,
-								"command": []interface{}{"/repo-agent/repo-sandbox", "inject", "--path", "/opt/repo-agent"},
+								"command": []interface{}{"repo-sandbox", "inject", "--path", "/opt/repo-agent"},
 								"volumeMounts": []interface{}{
 									map[string]interface{}{"name": "agent-bin", "mountPath": "/opt/repo-agent"},
 								},

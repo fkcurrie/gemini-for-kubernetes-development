@@ -68,10 +68,11 @@ RUN for i in 1 2 3 4 5; do \
         sleep 5; \
     done
 
+COPY --from=build-repo-sandbox /repo-sandbox /usr/local/bin/repo-sandbox
 COPY --from=build-repo-sandbox /repo-sandbox /repo-agent/repo-sandbox
 COPY --from=build-gh /bin/gh /bin/gh
 
 RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go
 
 WORKDIR /workspaces
-ENTRYPOINT ["/repo-agent/repo-sandbox", "agent"]
+ENTRYPOINT ["repo-sandbox", "agent"]

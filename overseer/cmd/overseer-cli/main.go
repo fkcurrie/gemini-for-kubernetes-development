@@ -314,7 +314,7 @@ func runChore(ctx context.Context, name string, file string) error {
 		return fmt.Errorf("failed to create github client: %w", err)
 	}
 
-	if err := ensureGitHubUser(ctx, ghClient); err != nil {
+	if err := ensureGitHubUser(ctx, ghClient, isDryRun); err != nil {
 		return err
 	}
 
@@ -543,7 +543,7 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 		return nil
 	}
 
-	if err := ensureGitHubUser(ctx, ghClient); err != nil {
+	if err := ensureGitHubUser(ctx, ghClient, isDryRun); err != nil {
 		return err
 	}
 
@@ -680,7 +680,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return nil
 	}
 
-	if err := ensureGitHubUser(ctx, ghClient); err != nil {
+	if err := ensureGitHubUser(ctx, ghClient, isDryRun); err != nil {
 		return err
 	}
 
@@ -827,34 +827,38 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 		return fmt.Errorf("failed to convert Overseer: %w", err)
 	}
 
-	token := os.Getenv("GITHUB_TOKEN")
-	if token == "" {
-		githubSecretName := overseer.Spec.RobotAccount
+	var owner, repoName string
+	var client *githubv39.Client
+	if !isDryRun {
+		token := os.Getenv("GITHUB_TOKEN")
+		if token == "" {
+			githubSecretName := overseer.Spec.RobotAccount
 
-		rwUnstructuredCopy := rwUnstructured.DeepCopy()
-		_ = unstructured.SetNestedField(rwUnstructuredCopy.Object, githubSecretName, "spec", "githubSecretName")
-		// workaround since GetGithubToken expects the secret name to be in the spec, but our unstructured doesn't have it set there
-		// all requires namespace
-		_ = unstructured.SetNestedField(rwUnstructuredCopy.Object, namespace, "metadata", "namespace")
+			rwUnstructuredCopy := rwUnstructured.DeepCopy()
+			_ = unstructured.SetNestedField(rwUnstructuredCopy.Object, githubSecretName, "spec", "githubSecretName")
+			// workaround since GetGitHubToken expects the secret name to be in the spec, but our unstructured doesn't have it set there
+			// all requires namespace
+			_ = unstructured.SetNestedField(rwUnstructuredCopy.Object, namespace, "metadata", "namespace")
 
-		// Get GitHub token from secret
-		token, err = manager.GetGitHubToken(ctx, rwUnstructuredCopy)
-		if err != nil {
-			return fmt.Errorf("failed to get github token: %w", err)
+			// Get GitHub token from secret
+			token, err = manager.GetGitHubToken(ctx, rwUnstructuredCopy)
+			if err != nil {
+				return fmt.Errorf("failed to get github token: %w", err)
+			}
 		}
-	}
 
-	// Create GitHub client
-	client := clients.NewGitHubClient(ctx, token)
+		// Create GitHub client
+		client = clients.NewGitHubClient(ctx, token)
 
-	// Parse repo URL
-	repoURL, found, err := unstructured.NestedString(rwUnstructured.Object, "spec", "repoURL")
-	if err != nil || !found {
-		return fmt.Errorf("repoURL not found in Overseer %s", overseerName)
-	}
-	owner, repoName, err := parseRepoURL(repoURL)
-	if err != nil {
-		return fmt.Errorf("failed to parse repo URL %s: %w", repoURL, err)
+		// Parse repo URL
+		repoURL, found, err := unstructured.NestedString(rwUnstructured.Object, "spec", "repoURL")
+		if err != nil || !found {
+			return fmt.Errorf("repoURL not found in Overseer %s", overseerName)
+		}
+		owner, repoName, err = parseRepoURL(repoURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse repo URL %s: %w", repoURL, err)
+		}
 	}
 
 	// Try Unmarshalling the yaml review payload into PullRequestReviewRequest
@@ -873,6 +877,15 @@ func submitAgentDraft(ctx context.Context, manager *k8s.Manager, kubeClient *cli
 	}
 
 	if isDryRun {
+		// Try to parse repo URL for better logging if possible, but don't fail if it's missing
+		repoURL, _, _ := unstructured.NestedString(rwUnstructured.Object, "spec", "repoURL")
+		owner, repoName, _ = parseRepoURL(repoURL)
+		if owner == "" {
+			owner = "unknown-owner"
+		}
+		if repoName == "" {
+			repoName = "unknown-repo"
+		}
 		klog.Infof("[dryrun] Would create review on GitHub for %s/%s PR %d (found task %s)", owner, repoName, prNumber, latestReviewTask.Name)
 		return nil
 	}
@@ -909,7 +922,7 @@ var (
 	githubBotEmail  string
 )
 
-func ensureGitHubUser(ctx context.Context, ghClient *github.Client) error {
+func ensureGitHubUser(ctx context.Context, ghClient *github.Client, isDryRun bool) error {
 	if githubBotLogin == "" {
 		githubBotLogin = os.Getenv("GITHUB_BOT_LOGIN")
 		githubBotName = os.Getenv("GITHUB_BOT_NAME")
@@ -936,7 +949,7 @@ func ensureGitHubUser(ctx context.Context, ghClient *github.Client) error {
 		return nil
 	}
 
-	if dryRun {
+	if isDryRun {
 		klog.Infof("[dryrun] Skipping GitHub user info fetch. Using defaults.")
 		githubUserLogin = "dryrun-user"
 		githubUserName = "Dryrun User"
