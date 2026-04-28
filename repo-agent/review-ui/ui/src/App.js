@@ -22,11 +22,9 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState('dashboard'); // 'dashboard', 'settings', 'add_repo', 'overseer'
   const [githubAuthEnabled, setGithubAuthEnabled] = useState(false);
-  const [showGithubConfig, setShowGithubConfig] = useState(false);
   const [githubClientId, setGithubClientId] = useState('');
   const [githubClientSecret, setGithubClientSecret] = useState('');
   const [isGeminiKeySet, setIsGeminiKeySet] = useState(true); // Default to true to avoid flash of warning
-  const [configError, setConfigError] = useState('');
 
   const [repos, setRepos] = useState([]);
   const [activeRepo, setActiveRepo] = useState(null);
@@ -179,26 +177,6 @@ function App() {
         setHasInstructionDraft(false);
     }
   }, [activeRepo, isAuthenticated, isGuest]);
-
-  const handleGithubConfigSubmit = (e) => {
-    e.preventDefault();
-    setConfigError('');
-    fetch('/api/auth/github-config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_id: githubClientId, client_secret: githubClientSecret })
-    })
-    .then(async (res) => {
-      if (res.ok) {
-        setGithubAuthEnabled(true);
-        setShowGithubConfig(false);
-      } else {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to update config');
-      }
-    })
-    .catch(err => setConfigError(err.message));
-  };
 
   const fetchRepos = useCallback(() => {
     if (!isAuthenticated && !isGuest) return;
