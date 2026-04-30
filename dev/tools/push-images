@@ -94,10 +94,17 @@ def main(args):
     working_dir = args.working_dir or repo_root
     print(f"using working dir: {working_dir}")
 
-    images_dir = os.path.join(working_dir, "images")
+    if args.images_dir:
+        images_dir = os.path.abspath(args.images_dir)
+    else:
+        images_dir = os.path.join(working_dir, "images")
+
+        if not os.path.isdir(images_dir):
+            # Also check repo-agent/images
+            images_dir = os.path.join(working_dir, "repo-agent", "images")
 
     if not os.path.isdir(images_dir):
-        print("images directory not found")
+        print(f"images directory {images_dir} not found")
         return
 
     for root, dirs, files in os.walk(images_dir):
@@ -110,6 +117,10 @@ def main(args):
 
             if args.skipped_images and service_name in args.skipped_images:
                 print(f"skipping image {service_name}")
+                continue
+
+            if args.only_images and service_name not in args.only_images:
+                print(f"excluding image {service_name}")
                 continue
 
             image_name = utils.get_full_image_name(args, service_name)
@@ -138,10 +149,21 @@ if __name__ == "__main__":
                         help="use working dir instead of repo root",
                         type=str,
                         default=None)
+    parser.add_argument("--images-dir",
+                        dest="images_dir",
+                        help="directory containing images to build",
+                        type=str,
+                        default=None)
     parser.add_argument("--skip",
                         dest="skipped_images",
                         action="append",
                         help="Image name (folder name) to skip. Can be repeated.",
+                        type=str,
+                        default=[])
+    parser.add_argument("--only",
+                        dest="only_images",
+                        action="append",
+                        help="Image name (folder name) to include. Can be repeated.",
                         type=str,
                         default=[])
     args = parser.parse_args()

@@ -560,14 +560,24 @@ function TaskReviewCard({
                         {taskCollapsed ? 'click to expand' : 'click to collapse'}
                     </span>
                 </div>
-                 {reviewFlairText && (
-                    <span 
-                    style={{ marginRight: '10px', backgroundColor: getReviewFlairColor(reviewFlairText), color: 'white', padding: '5px 10px', borderRadius: '5px', fontSize: 'small' }}
-                    title={task.agentStateMessage || ''}
-                    >
-                    {reviewFlairText}
-                    </span>
-                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {task.stats?.models && (() => {
+                        const totalReqs = Object.values(task.stats.models).reduce((sum, m) => sum + (m.totalRequests || 0), 0);
+                        return totalReqs > 0 ? (
+                            <span style={{ fontSize: 'small', color: 'var(--text-secondary)', fontFamily: 'monospace' }}>
+                                {totalReqs} {totalReqs === 1 ? 'req' : 'reqs'}
+                            </span>
+                        ) : null;
+                    })()}
+                    {reviewFlairText && (
+                        <span
+                        style={{ backgroundColor: getReviewFlairColor(reviewFlairText), color: 'white', padding: '5px 10px', borderRadius: '5px', fontSize: 'small' }}
+                        title={task.agentStateMessage || ''}
+                        >
+                        {reviewFlairText}
+                        </span>
+                    )}
+                </div>
             </div>
             
             {!taskCollapsed && (
@@ -583,6 +593,37 @@ function TaskReviewCard({
                      {showLogs && (
                         <div className="logs-display" style={{backgroundColor: '#333', color: '#fff', padding: '10px', borderRadius: '5px', marginBottom: '10px', maxHeight: '300px', overflowY: 'auto'}}>
                             <pre style={{margin: 0, whiteSpace: 'pre-wrap', fontFamily: 'monospace'}}>{logs || 'Loading logs...'}</pre>
+                        </div>
+                     )}
+                     {task.stats?.models && Object.keys(task.stats.models).length > 0 && (
+                        <div style={{ marginBottom: '10px', border: '1px solid var(--border-color)', borderRadius: '5px', overflow: 'hidden' }}>
+                            <div style={{ padding: '6px 10px', backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)', fontSize: 'small', fontWeight: 'bold' }}>
+                                Model Usage
+                            </div>
+                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'small', fontFamily: 'monospace' }}>
+                                <thead>
+                                    <tr style={{ backgroundColor: 'var(--bg-secondary)', textAlign: 'right' }}>
+                                        <th style={{ padding: '6px 10px', textAlign: 'left', borderBottom: '1px solid var(--border-color)' }}>Model</th>
+                                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-color)' }}>Reqs</th>
+                                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-color)' }}>Input</th>
+                                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-color)' }}>Output</th>
+                                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-color)' }}>Thinking</th>
+                                        <th style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-color)' }}>Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {Object.entries(task.stats.models).map(([model, usage]) => (
+                                        <tr key={model}>
+                                            <td style={{ padding: '6px 10px', borderBottom: '1px solid var(--border-color)' }}>{model}</td>
+                                            <td style={{ padding: '6px 10px', textAlign: 'right', borderBottom: '1px solid var(--border-color)' }}>{(usage.totalRequests || 0).toLocaleString()}</td>
+                                            <td style={{ padding: '6px 10px', textAlign: 'right', borderBottom: '1px solid var(--border-color)' }}>{(usage.inputTokens || 0).toLocaleString()}</td>
+                                            <td style={{ padding: '6px 10px', textAlign: 'right', borderBottom: '1px solid var(--border-color)' }}>{(usage.outputTokens || 0).toLocaleString()}</td>
+                                            <td style={{ padding: '6px 10px', textAlign: 'right', borderBottom: '1px solid var(--border-color)' }}>{(usage.thoughtTokens || 0).toLocaleString()}</td>
+                                            <td style={{ padding: '6px 10px', textAlign: 'right', borderBottom: '1px solid var(--border-color)' }}>{(usage.totalTokens || 0).toLocaleString()}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
                         </div>
                      )}
                      {isSubmitted ? (
@@ -696,6 +737,7 @@ function PrReviewCard({
   lastUpdated,
   repoName: propRepoName,
   onRefresh,
+  availableModels = [],
 }) {
   const [diff, setDiff] = useState(null);
   const [diffError, setDiffError] = useState(null);
@@ -705,7 +747,16 @@ function PrReviewCard({
   const [showNewTaskForm, setShowNewTaskForm] = useState(false);
   const [newTaskPrompt, setNewTaskPrompt] = useState('');
   const [expectedComments, setExpectedComments] = useState(0);
+  const [selectedModel, setSelectedModel] = useState('gemini-3.1-pro-preview');
   const lastDragTargetRef = useRef(null);
+
+  const reviewModels = (availableModels && availableModels.length > 0) ? availableModels : [
+    'gemini-3.1-pro-preview',
+    'gemini-3-flash-preview',
+    'gemini-2.0-pro-exp-02-05',
+    'gemini-2.0-flash-exp'
+  ];
+
 
   const isCollapsed = collapsedReviews[pr.id];
   const repoName = propRepoName || (pr.sandbox ? pr.sandbox.split('-pr-')[0] : '');
@@ -752,6 +803,8 @@ function PrReviewCard({
         .catch(err => console.error("Failed to fetch tasks:", err));
   };
 
+
+
   useEffect(() => {
     fetchTasks();
     const interval = setInterval(fetchTasks, 10000);
@@ -763,7 +816,11 @@ function PrReviewCard({
       fetch(`/api/repo/${repoName}/prs/${pr.id}/tasks`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: newTaskPrompt, expectedComments: expectedComments })
+          body: JSON.stringify({ 
+              prompt: newTaskPrompt, 
+              expectedComments: expectedComments,
+              model: selectedModel
+          })
       })
       .then(res => {
           if (res.ok) {
@@ -906,6 +963,15 @@ function PrReviewCard({
                   &#9654;
                </button>
              </div>
+          ) : getSandboxStatusClass(pr) === 'red' ? (
+            <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
+              <span className={`pr-sandbox ${getSandboxStatusClass(pr)}`} title={pr.sandboxStatus || 'Error'}>
+                {pr.sandboxStatus?.startsWith('Evicted') ? 'Evicted' : (pr.sandboxStatus || 'Error')}
+              </span>
+              <button className="btn btn-sm pr-sandbox green" style={{padding: '4px 10px', fontSize: '14px'}} onClick={(e) => { e.stopPropagation(); handleScaleUp(pr.id, true); }} title="Restart/Reprovision Sandbox">
+                  &#8635;
+               </button>
+            </div>
           ) : (
             <span className={`pr-sandbox ${getSandboxStatusClass(pr)}`}>Sandbox: Not created</span>
           )}
@@ -948,10 +1014,14 @@ function PrReviewCard({
             ))}
 
             {!isSubmitted && (
-                <div style={{padding: '10px', borderTop: '1px solid var(--border-color)', marginTop: '10px'}}>
-                    {!showNewTaskForm ? (
-                        <button className="btn" onClick={() => setShowNewTaskForm(true)}>Review Again</button>
-                    ) : (
+                <div style={{padding: '10px', borderTop: '1px solid var(--border-color)', marginTop: '10px', display: 'flex', gap: '10px', flexDirection: 'column'}}>
+                    <div style={{display: 'flex', gap: '10px'}}>
+                        {!showNewTaskForm && (
+                            <button className="btn" onClick={() => setShowNewTaskForm(true)}>Review Again</button>
+                        )}
+                    </div>
+
+                    {showNewTaskForm && (
                         <div className="new-task-form" style={{padding: '10px', backgroundColor: 'var(--bg-secondary)', borderRadius: '5px'}}>
                             <h4>Request New Review Task</h4>
                             <div style={{marginBottom: '10px'}}>
@@ -971,6 +1041,16 @@ function PrReviewCard({
                                     <span>50</span>
                                 </div>
                             </div>
+                            <div style={{marginBottom: '10px'}}>
+                                <label style={{fontSize: 'small', color: 'var(--text-secondary)', display: 'block', marginBottom: '5px'}}>Model:</label>
+                                <select 
+                                    value={selectedModel} 
+                                    onChange={(e) => setSelectedModel(e.target.value)}
+                                    style={{width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)'}}
+                                >
+                                    {reviewModels.map(m => <option key={m} value={m}>{m}</option>)}
+                                </select>
+                            </div>
                             <textarea 
                                 className="review-textarea"
                                 value={newTaskPrompt}
@@ -984,6 +1064,8 @@ function PrReviewCard({
                             </div>
                         </div>
                     )}
+
+
                 </div>
             )}
             

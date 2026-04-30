@@ -18,6 +18,7 @@ package repowatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -53,7 +54,6 @@ import (
 	sandboxtaskv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/sandboxtask/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/clients"
 	pkg_github "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
-	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/overseer"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/prompts"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/sandbox"
 )
@@ -152,7 +152,7 @@ func parseRepoURL(repoURL string) (string, string, error) {
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("invalid repo url: %s", repoURL)
 	}
-	return parts[0], parts[1], nil
+	return parts[0], strings.TrimSuffix(parts[1], ".git"), nil
 }
 
 func NewGithubClient(ctx context.Context, k8sClient client.Client, repoWatch *reviewv1alpha1.RepoWatch) (*github.Client, map[string]string, error) {
@@ -244,6 +244,11 @@ func NewGithubClient(ctx context.Context, k8sClient client.Client, repoWatch *re
 	return clients.NewGitHubClientFromHTTP(tc), githubConfig, nil
 }
 
+type cachedUser struct {
+	user   *github.User
+	expiry time.Time
+}
+
 // Reconciler reconciles a RepoWatch object
 type Reconciler struct {
 	client.Client
@@ -251,6 +256,9 @@ type Reconciler struct {
 	NewGithubClient  githubClientFactory
 	RepoSandboxImage string
 	ConfigDirImage   string
+
+	userCacheMu sync.Mutex
+	userCache   map[string]cachedUser
 }
 
 //+kubebuilder:rbac:groups=review.gemini.google.com,resources=repowatches,verbs=get;list;watch;create;update;patch;delete
@@ -298,20 +306,44 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	// Get the current user
-	user, _, err := ghClient.Users.Get(ctx, "")
-	if err != nil {
-		// If we see this error : "GET https://api.github.com/user: 403 Resource not accessible by integration []"
-		// we are running in a github workflow with a GITHUB_TOKEN that does not have access to read user info.
-		// In this case we just log a warning and set fake user info.
-		if strings.Contains(err.Error(), "403 Resource not accessible by integration") {
-			log.Info("Warning: unable to get current user info due to insufficient permissions. Using fallback user info.")
-			user = &github.User{
-				Login: github.String("fake-user"),
+	var user *github.User
+	cacheKey := repoWatch.Namespace + "/" + repoWatch.Name
+	r.userCacheMu.Lock()
+	if r.userCache == nil {
+		r.userCache = make(map[string]cachedUser)
+	}
+	if cached, ok := r.userCache[cacheKey]; ok && time.Now().Before(cached.expiry) {
+		userCopy := *cached.user
+		user = &userCopy
+	}
+	r.userCacheMu.Unlock()
+
+	if user == nil {
+		var err error
+		user, _, err = ghClient.Users.Get(ctx, "")
+		if err != nil {
+			// If we see this error : "GET https://api.github.com/user: 403 Resource not accessible by integration []"
+			// we are running in a github workflow with a GITHUB_TOKEN that does not have access to read user info.
+			// In this case we just log a warning and set fake user info.
+			if strings.Contains(err.Error(), "403 Resource not accessible by integration") {
+				log.Info("Warning: unable to get current user info due to insufficient permissions. Using fallback user info.")
+				user = &github.User{
+					Login: github.String("fake-user"),
+				}
+			} else {
+				log.Error(err, "unable to get current user")
+				r.setAuthCondition(ctx, repoWatch, metav1.ConditionFalse, "TokenInvalid", err.Error())
+				return ctrl.Result{}, err
 			}
 		} else {
-			log.Error(err, "unable to get current user")
-			r.setAuthCondition(ctx, repoWatch, metav1.ConditionFalse, "TokenInvalid", err.Error())
-			return ctrl.Result{}, err
+			r.userCacheMu.Lock()
+			r.userCache[cacheKey] = cachedUser{
+				user:   user,
+				expiry: time.Now().Add(15 * time.Minute),
+			}
+			r.userCacheMu.Unlock()
+			userCopy := *user
+			user = &userCopy
 		}
 	}
 
@@ -324,10 +356,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		user.Email = github.String(githubConfig["email"])
 	}
 
+	// List Pods to check for status/eviction
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, client.InNamespace(repoWatch.Namespace)); err != nil {
+		log.Error(err, "unable to list pods")
+	}
+	podsBySandbox := make(map[string]*corev1.Pod)
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		// Sandboxes create Pods with label sandbox=<SandboxName>
+		if sandboxLabel, ok := pod.Labels["sandbox"]; ok {
+			podsBySandbox[sandboxLabel] = pod
+		}
+	}
+
 	var reconcileErr error
 	// Reconcile Reviews for Pull Requests
 	log.Info("reconciling reviews")
-	if err := r.reconcileReviews(ctx, repoWatch, ghClient, owner, repo, user); err != nil {
+	if err := r.reconcileReviews(ctx, repoWatch, ghClient, owner, repo, user, podsBySandbox); err != nil {
 		log.Error(err, "unable to reconcile reviews")
 		reconcileErr = errors.Join(reconcileErr, err)
 		// Continue to next reconciliation
@@ -335,7 +381,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	log.Info("reconciling issues")
 	// Reconcile Issues
-	if err := r.reconcileIssues(ctx, repoWatch, ghClient, owner, repo, user); err != nil {
+	if err := r.reconcileIssues(ctx, repoWatch, ghClient, owner, repo, user, podsBySandbox); err != nil {
 		log.Error(err, "unable to reconcile issues")
 		reconcileErr = errors.Join(reconcileErr, err)
 		// Continue to next reconciliation
@@ -343,16 +389,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	log.Info("reconciling dev sandboxes")
 	// Reconcile Dev Sandboxes
-	if err := r.reconcileDevSandboxes(ctx, user, repoWatch, ghClient, repo); err != nil {
+	if err := r.reconcileDevSandboxes(ctx, user, repoWatch, ghClient, repo, podsBySandbox); err != nil {
 		log.Error(err, "unable to reconcile dev sandboxes")
 		reconcileErr = errors.Join(reconcileErr, err)
 		// Continue to next reconciliation
-	}
-
-	log.Info("reconciling overseer")
-	if err := r.reconcileOverseer(ctx, repoWatch, user); err != nil {
-		log.Error(err, "unable to reconcile overseer")
-		reconcileErr = errors.Join(reconcileErr, err)
 	}
 
 	return ctrl.Result{RequeueAfter: time.Second * time.Duration(repoWatch.Spec.PollIntervalSeconds)}, reconcileErr
@@ -379,7 +419,7 @@ func (r *Reconciler) setAuthCondition(ctx context.Context, repoWatch *reviewv1al
 	}
 }
 
-func (r *Reconciler) reconcileReviews(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, owner string, repo string, user *github.User) error {
+func (r *Reconciler) reconcileReviews(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, owner string, repo string, user *github.User, podsBySandbox map[string]*corev1.Pod) error {
 	log := log.FromContext(ctx)
 
 	explicitPRs := r.getExplicitPRs(ctx, ghClient, repoWatch, owner, repo)
@@ -420,7 +460,7 @@ func (r *Reconciler) reconcileReviews(ctx context.Context, repoWatch *reviewv1al
 		return err
 	}
 
-	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(ctx, repoWatch, explicitPRs, prs, sandboxList)
+	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(ctx, user, repoWatch, explicitPRs, prs, sandboxList, podsBySandbox)
 
 	repoWatch.Status.ActiveSandboxCount = activeSandboxes
 	repoWatch.Status.ReviewSandboxes = watchedPRs
@@ -473,10 +513,29 @@ func (r *Reconciler) listOpenPRs(ctx context.Context, ghClient *github.Client, o
 }
 
 func (r *Reconciler) filterPRsByLabels(prs []*github.PullRequest, repoWatch *reviewv1alpha1.RepoWatch) []*github.PullRequest {
-	// Filter by Labels
-	if len(repoWatch.Spec.Review.Labels) > 0 {
-		var filteredPRs []*github.PullRequest
-		for _, pr := range prs {
+	var filteredPRs []*github.PullRequest
+	for _, pr := range prs {
+		// Filter by ExcludeLabels first
+		if len(repoWatch.Spec.Review.ExcludeLabels) > 0 {
+			excluded := false
+			for _, excludeLabel := range repoWatch.Spec.Review.ExcludeLabels {
+				for _, prLabel := range pr.Labels {
+					if prLabel.Name != nil && *prLabel.Name == excludeLabel {
+						excluded = true
+						break
+					}
+				}
+				if excluded {
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
+		}
+
+		// Filter by Labels
+		if len(repoWatch.Spec.Review.Labels) > 0 {
 			matches := false
 			for _, labelSet := range repoWatch.Spec.Review.Labels {
 				labelSetMatches := true
@@ -501,10 +560,12 @@ func (r *Reconciler) filterPRsByLabels(prs []*github.PullRequest, repoWatch *rev
 			if matches {
 				filteredPRs = append(filteredPRs, pr)
 			}
+		} else {
+			// No positive labels specified, so it matches by default (after passing exclusion)
+			filteredPRs = append(filteredPRs, pr)
 		}
-		return filteredPRs
 	}
-	return prs
+	return filteredPRs
 }
 
 func (r *Reconciler) filterPRsByAssignees(prs []*github.PullRequest, repoWatch *reviewv1alpha1.RepoWatch, user *github.User) []*github.PullRequest {
@@ -573,7 +634,7 @@ func (r *Reconciler) excludePRs(prs []*github.PullRequest, repoWatch *reviewv1al
 	return filteredPRs
 }
 
-func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, explicitPRs []*github.PullRequest, prs []*github.PullRequest, sandboxes *unstructured.UnstructuredList) ([]reviewv1alpha1.WatchedPR, []int, int) {
+func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, explicitPRs []*github.PullRequest, prs []*github.PullRequest, sandboxes *unstructured.UnstructuredList, podsBySandbox map[string]*corev1.Pod) ([]reviewv1alpha1.WatchedPR, []int, int) {
 	log := log.FromContext(ctx)
 
 	ownedSandboxes := getOwnedSandboxes(sandboxes.Items, repoWatch.UID)
@@ -647,10 +708,15 @@ func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoW
 				activeSandboxes--
 			}
 
+			sandboxStatus, err := r.reconcileSandboxPodStatus(ctx, existingSandbox, podsBySandbox, scaledDown)
+			if err != nil {
+				log.Error(err, "unable to reconcile sandbox pod status", "pr", *pr.Number)
+			}
+
 			watchedPRs = append(watchedPRs, reviewv1alpha1.WatchedPR{
 				Number:      *pr.Number,
 				SandboxName: sandboxName,
-				Status:      "Active",
+				Status:      sandboxStatus,
 				ScaledDown:  scaledDown,
 			})
 		} else {
@@ -661,7 +727,7 @@ func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoW
 			if prIsExplicit || (activeSandboxes < repoWatch.Spec.Review.MaxActiveSandboxes) &&
 				(repoWatch.Spec.Review.MaxSandboxes == 0 || totalSandboxes < repoWatch.Spec.Review.MaxSandboxes) {
 				log.Info("creating sandbox for PR", "pr", *pr.Number)
-				if err := r.createReviewSandboxForPR(ctx, repoWatch, pr); err != nil {
+				if err := r.createReviewSandboxForPR(ctx, user, repoWatch, pr); err != nil {
 					log.Error(err, "unable to create sandbox for PR", "pr", *pr.Number)
 				} else {
 					activeSandboxes++
@@ -681,7 +747,7 @@ func (r *Reconciler) reconcileReviewSandboxesInternal(ctx context.Context, repoW
 	return watchedPRs, pendingPRs, activeSandboxes
 }
 
-func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, owner string, repo string, user *github.User) error {
+func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, owner string, repo string, user *github.User, podsBySandbox map[string]*corev1.Pod) error {
 	log := log.FromContext(ctx)
 	if repoWatch.Spec.Issue == nil {
 		return nil
@@ -725,20 +791,6 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 
 	ownedSandboxes := getOwnedSandboxes(sandboxList.Items, repoWatch.UID)
 
-	// List Pods to check for eviction
-	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList, client.InNamespace(repoWatch.Namespace), client.MatchingLabels{"sandbox-type": "issue"}); err != nil {
-		log.Error(err, "unable to list pods")
-	}
-	podsBySandbox := make(map[string]*corev1.Pod)
-	for i := range podList.Items {
-		pod := &podList.Items[i]
-		// RGD creates Pod with label sandbox=devc-<IssueSandboxName>
-		if sandboxLabel, ok := pod.Labels["sandbox"]; ok {
-			podsBySandbox[sandboxLabel] = pod
-		}
-	}
-
 	// 3. Process Issues
 	activeSandboxes := 0
 	totalSandboxes := 0
@@ -770,7 +822,7 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 			continue
 		}
 
-		sandboxName := fmt.Sprintf("devc-%s-issue-%d", repoWatch.Name, *issue.Number)
+		sandboxName := fmt.Sprintf("%s-issue-%d", repoWatch.Name, *issue.Number)
 		validSandboxNames[sandboxName] = true
 
 		// Check if sandbox exists
@@ -788,6 +840,11 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 			// Check for feedback
 			if err := r.reconcileIssueFeedback(ctx, repoWatch, existingSandbox, issue, ghClient); err != nil {
 				log.Error(err, "unable to reconcile issue feedback", "issue", *issue.Number)
+			}
+
+			// Check for PR failures
+			if err := r.reconcilePRFailures(ctx, repoWatch, existingSandbox, issue, ghClient); err != nil {
+				log.Error(err, "unable to reconcile PR failures", "issue", *issue.Number)
 			}
 
 			// Manage lifecycle (pause/unpause)
@@ -808,50 +865,9 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 				activeSandboxes--
 			}
 
-			// Check if pod is evicted or has other status
-			podName := existingSandbox.GetName()
-			pod := podsBySandbox[podName]
-			sandboxStatus := "Active"
-			if scaledDown {
-				sandboxStatus = "ScaledDown"
-			}
-
-			podStatusStr := ""
-			if pod != nil {
-				if pod.Status.Reason == "Evicted" {
-					podStatusStr = "Evicted"
-				} else if pod.Status.Phase == corev1.PodFailed {
-					podStatusStr = fmt.Sprintf("fail: %s", pod.Status.Reason)
-				} else {
-					podStatusStr = string(pod.Status.Phase)
-				}
-				sandboxStatus = podStatusStr
-			}
-
-			updateAnnotation := false
-			annotations := existingSandbox.GetAnnotations()
-			if annotations == nil {
-				annotations = make(map[string]string)
-			}
-
-			shouldPersist := podStatusStr != ""
-			if shouldPersist {
-				if annotations["sandbox.gemini.google.com/pod-status"] != podStatusStr {
-					annotations["sandbox.gemini.google.com/pod-status"] = podStatusStr
-					updateAnnotation = true
-				}
-			} else {
-				if _, ok := annotations["sandbox.gemini.google.com/pod-status"]; ok {
-					delete(annotations, "sandbox.gemini.google.com/pod-status")
-					updateAnnotation = true
-				}
-			}
-
-			if updateAnnotation {
-				existingSandbox.SetAnnotations(annotations)
-				if err := r.Update(ctx, existingSandbox); err != nil {
-					log.Error(err, "failed to update sandbox annotation for pod status")
-				}
+			sandboxStatus, err := r.reconcileSandboxPodStatus(ctx, existingSandbox, podsBySandbox, scaledDown)
+			if err != nil {
+				log.Error(err, "unable to reconcile sandbox pod status", "issue", *issue.Number)
 			}
 
 			// Ensure tasks exist for applicable handlers
@@ -922,8 +938,15 @@ func (r *Reconciler) reconcileIssues(ctx context.Context, repoWatch *reviewv1alp
 }
 
 func (r *Reconciler) isIssueMatch(issue *github.Issue, handler reviewv1alpha1.IssueHandlerSpec, repoWatch *reviewv1alpha1.RepoWatch, user *github.User) bool {
-	// Exclude explicit excludes from IssueSpec
 	if repoWatch.Spec.Issue != nil {
+		// Include explicit includes - bypass other filters
+		for _, included := range repoWatch.Spec.Issue.Issues {
+			if *issue.Number == included {
+				return true
+			}
+		}
+
+		// Exclude explicit excludes from IssueSpec
 		for _, excluded := range repoWatch.Spec.Issue.ExcludeIssues {
 			if *issue.Number == excluded {
 				return false
@@ -943,11 +966,15 @@ func (r *Reconciler) isIssueMatch(issue *github.Issue, handler reviewv1alpha1.Is
 				return false
 			}
 		}
+	}
 
-		// Include explicit includes
-		for _, included := range repoWatch.Spec.Issue.Issues {
-			if *issue.Number == included {
-				return true
+	// Check labels
+	if len(handler.ExcludeLabels) > 0 {
+		for _, label := range issue.Labels {
+			for _, excludeLabel := range handler.ExcludeLabels {
+				if label.Name != nil && *label.Name == excludeLabel {
+					return false
+				}
 			}
 		}
 	}
@@ -985,6 +1012,9 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 
 	userLogin := user.GetLogin()
 	userName := user.GetName()
+	if userName == "" {
+		userName = userLogin
+	}
 	userEmail := user.GetEmail()
 
 	// Default bot info to empty (or current user if not using robot account)
@@ -1045,6 +1075,7 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			Labels: map[string]string{
 				"review.gemini.google.com/repowatch": repoWatch.Name,
 				"sandbox.gemini.google.com/type":     "issue",
+				"sandbox-type":                       "issue",
 			},
 			Annotations: map[string]string{
 				"agentState": "provisioning",
@@ -1057,6 +1088,9 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			UserLogin:             userLogin,
 			UserName:              userName,
 			UserEmail:             userEmail,
+			BotLogin:              botLogin,
+			BotName:               botName,
+			BotEmail:              botEmail,
 			LLMProvider:           repoWatch.Spec.Issue.LLM.Provider,
 			LLMConfigdirRef:       repoWatch.Spec.Issue.LLM.ConfigdirRef,
 			LLMAPIKeySecretName:   apiKeySecretName,
@@ -1069,21 +1103,19 @@ func (r *Reconciler) createIssueSandbox(ctx context.Context, user *github.User, 
 			HTTPEnabled:           true,
 			Replicas:              1,
 			ServiceAccountName:    "issue-sandbox",
+			WorkspaceDiskSize:     repoWatch.Spec.Issue.WorkspaceDiskSize,
 		},
-		DindSupport: repoWatch.Spec.Issue.DindSupport,
-		IssueID:     fmt.Sprintf("%d", *issue.Number),
-		IssueTitle:  *issue.Title,
-		IssueRepo:   repoWatch.GetName(),
+		DindSupport:   repoWatch.Spec.Issue.DindSupport,
+		LLMExtensions: repoWatch.Spec.Issue.LLM.Extensions,
+		IssueID:       fmt.Sprintf("%d", *issue.Number),
+		IssueTitle:    *issue.Title,
+		IssueRepo:     repoWatch.GetName(),
 		//Handler:    "", // Handled per task?
-		BotLogin: botLogin,
-		BotName:  botName,
-		BotEmail: botEmail,
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("2000m"),
-				corev1.ResourceMemory: resource.MustParse("2Gi"),
-				"ephemeral-storage":   ephemeralStorage,
-			},
+		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("2000m"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
+			"ephemeral-storage":   ephemeralStorage,
+		},
 			Limits: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("4000m"),
 				corev1.ResourceMemory: resource.MustParse("6Gi"),
@@ -1137,6 +1169,7 @@ func (r *Reconciler) ensureIssueTask(ctx context.Context, repoWatch *reviewv1alp
 		"ISSUEID":      fmt.Sprintf("%d", *issue.Number),
 		"AGENT_PROMPT": prompt,
 		"HANDLER_NAME": handler.Name,
+		"PR_LABEL":     "repo-agent",
 	}
 	//params["GIT_PUSH_ENABLED"] = "true"
 	if repoWatch.Spec.Issue.LLM.Provider != "" {
@@ -1147,6 +1180,10 @@ func (r *Reconciler) ensureIssueTask(ctx context.Context, repoWatch *reviewv1alp
 	}
 	if repoWatch.Spec.Issue.LLM.ConfigdirRef != "" {
 		params["AGENT_LLM_CONFIGDIR"] = repoWatch.Spec.Issue.LLM.ConfigdirRef
+	}
+	if len(repoWatch.Spec.Issue.LLM.Extensions) > 0 {
+		exts, _ := json.Marshal(repoWatch.Spec.Issue.LLM.Extensions)
+		params["AGENT_LLM_EXTENSIONS"] = string(exts)
 	}
 	if len(repoWatch.Spec.Issue.Models) > 0 {
 		params["model"] = strings.Join(repoWatch.Spec.Issue.Models, ",")
@@ -1168,255 +1205,109 @@ func (r *Reconciler) generateIssueHandlerPrompt(handler reviewv1alpha1.IssueHand
 // createReviewSandboxForPR creates a ReviewSandbox for a pull request.
 // It uses the LLM configuration from the RepoWatch CRD to configure the
 // sandbox.
-func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, pr *github.PullRequest) error {
+func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, pr *github.PullRequest) error {
 	log := log.FromContext(ctx)
 	sandboxName := fmt.Sprintf("%s-pr-%d", repoWatch.Name, *pr.Number)
 
 	prompt := repoWatch.Spec.Review.LLM.Prompt
 
+	userLogin := user.GetLogin()
+	userName := user.GetName()
+	if userName == "" {
+		userName = userLogin
+	}
+	userEmail := user.GetEmail()
+
 	githubSecretName := repoWatch.Spec.GithubSecretName
+	botLogin := ""
+	botName := ""
+	botEmail := ""
 	if repoWatch.Spec.Review.RobotAccount != "" {
 		githubSecretName = repoWatch.Spec.Review.RobotAccount
 		if err := r.ensureRobotSecret(ctx, repoWatch.Namespace, githubSecretName); err != nil {
 			log.Error(err, "failed to ensure robot secret", "secret", githubSecretName)
 			return err
 		}
+
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Name: githubSecretName, Namespace: repoWatch.Namespace}, secret); err != nil {
+			log.Error(err, "failed to get robot secret", "secret", githubSecretName)
+			return err
+		}
+
+		if len(secret.Data["userid"]) > 0 {
+			botLogin = string(secret.Data["userid"])
+		}
+		if len(secret.Data["name"]) > 0 {
+			botName = string(secret.Data["name"])
+		}
+		if len(secret.Data["email"]) > 0 {
+			botEmail = string(secret.Data["email"])
+		}
 	}
 
 	log.Info("Generated Sandbox for PR", "pr", *pr, "llm.provider", repoWatch.Spec.Review.LLM.Provider)
 
-	sandbox := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "agents.x-k8s.io/v1alpha1",
-			"kind":       "Sandbox",
-			"metadata": map[string]interface{}{
-				"name":      sandboxName,
-				"namespace": repoWatch.Namespace,
-				"labels": map[string]interface{}{
-					"review.gemini.google.com/repowatch": repoWatch.Name,
-				},
-				"annotations": map[string]interface{}{
-					"agentState":  "provisioning",
-					"reviewState": "",
-					// Source info injected as annotations for UI
-					"pr":       fmt.Sprintf("%d", *pr.Number),
-					"title":    *pr.Title,
-					"repo":     repoWatch.GetName(),
-					"htmlURL":  *pr.HTMLURL,
-					"diffURL":  *pr.DiffURL,
-					"cloneURL": fmt.Sprintf("%s#refs/heads/%s", *pr.Head.Repo.CloneURL, *pr.Head.Ref),
-				},
+	opt := sandbox.ReviewSandboxOptions{
+		DevSandboxOptions: sandbox.DevSandboxOptions{
+			Name:      sandboxName,
+			Namespace: repoWatch.Namespace,
+			Labels: map[string]string{
+				"review.gemini.google.com/repowatch": repoWatch.Name,
+				"sandbox.gemini.google.com/type":     "review",
 			},
-			"spec": map[string]interface{}{
-				"replicas": int64(1),
-				"podTemplate": map[string]interface{}{
-					"metadata": map[string]interface{}{
-						"labels": map[string]interface{}{
-							"sandbox": fmt.Sprintf("devc-%s", sandboxName),
-						},
-					},
-					"spec": map[string]interface{}{
-						"serviceAccountName": "review-sandbox",
-						"initContainers": []interface{}{
-							map[string]interface{}{
-								"name":  "gemini-configs",
-								"image": r.ConfigDirImage,
-								"args":  []interface{}{"--directory", "/workspaces", "--namespace", repoWatch.Namespace, "--name", repoWatch.Spec.Review.LLM.ConfigdirRef, "--ignore-not-found-error"},
-								"volumeMounts": []interface{}{
-									map[string]interface{}{
-										"name":      "workspaces-pvc",
-										"mountPath": "/workspaces",
-									},
-								},
-							},
-							map[string]interface{}{
-								"name":    "inject-agent",
-								"image":   r.RepoSandboxImage,
-								"command": []interface{}{"/repo-agent/repo-sandbox", "inject", "--path", "/opt/repo-agent"},
-								"volumeMounts": []interface{}{
-									map[string]interface{}{
-										"name":      "agent-bin",
-										"mountPath": "/opt/repo-agent",
-									},
-								},
-							},
-						},
-						"containers": []interface{}{
-							map[string]interface{}{
-								"name": "sandbox",
-								"image": func() string {
-									if repoWatch.Spec.Review.Image != "" {
-										return repoWatch.Spec.Review.Image
-									}
-									return r.RepoSandboxImage
-								}(),
-								"command": func() []interface{} {
-									if repoWatch.Spec.Review.Image != "" {
-										return []interface{}{sandbox.RepoSandboxBinary, "review-daemon"}
-									}
-									return []interface{}{}
-								}(),
-								"resources": map[string]interface{}{
-									"limits": map[string]interface{}{
-										"ephemeral-storage": "6Gi",
-									},
-									"requests": map[string]interface{}{
-										"ephemeral-storage": "6Gi",
-									},
-								},
-								"env": []interface{}{
-									map[string]interface{}{"name": "NAMESPACE", "value": repoWatch.Namespace},
-									map[string]interface{}{"name": "NAME", "value": sandboxName},
-									map[string]interface{}{"name": "REPO", "value": repoWatch.GetName()},
-									map[string]interface{}{"name": "PRID", "value": fmt.Sprintf("%d", *pr.Number)},
-									map[string]interface{}{"name": "MAX_REVIEW_FILES", "value": strconv.Itoa(repoWatch.Spec.Review.MaxReviewFiles)},
-									map[string]interface{}{"name": "IGNORE_FILES", "value": strings.Join(repoWatch.Spec.Review.IgnoreFiles, ",")},
-									map[string]interface{}{"name": "AGENT_NAME", "value": repoWatch.Spec.Review.LLM.Provider},
-									map[string]interface{}{"name": "GIT_CLONE_URL", "value": fmt.Sprintf("%s#refs/heads/%s", *pr.Head.Repo.CloneURL, *pr.Head.Ref)},
-									map[string]interface{}{"name": "ENVBUILDER_GIT_URL", "value": fmt.Sprintf("%s#refs/heads/%s", *pr.Head.Repo.CloneURL, *pr.Head.Ref)},
-									map[string]interface{}{"name": "GIT_DIFF_URL", "value": *pr.DiffURL},
-									map[string]interface{}{"name": "GIT_HTML_URL", "value": *pr.HTMLURL},
-									map[string]interface{}{
-										"name": "GITHUB_TOKEN",
-										"valueFrom": map[string]interface{}{
-											"secretKeyRef": map[string]interface{}{
-												"name":     githubSecretName,
-												"key":      "pat",
-												"optional": true,
-											},
-										},
-									},
-									map[string]interface{}{
-										"name": "MANUAL_PAT",
-										"valueFrom": map[string]interface{}{
-											"secretKeyRef": map[string]interface{}{
-												"name":     githubSecretName,
-												"key":      "manual_pat",
-												"optional": true,
-											},
-										},
-									},
-									map[string]interface{}{
-										"name": "OAUTH_PAT",
-										"valueFrom": map[string]interface{}{
-											"secretKeyRef": map[string]interface{}{
-												"name":     githubSecretName,
-												"key":      "oauth_pat",
-												"optional": true,
-											},
-										},
-									},
-									map[string]interface{}{"name": "ENVBUILDER_CACHE_REPO", "value": "registry.repo-agent-system.svc.cluster.local:5000/envbuilder-cache"},
-									map[string]interface{}{"name": "ENVBUILDER_DEVCONTAINER_DIR", "value": "/"},
-									map[string]interface{}{"name": "ENVBUILDER_GIT_CLONE_SINGLE_BRANCH", "value": "true"},
-									map[string]interface{}{"name": "ENVBUILDER_INIT_SCRIPT", "value": sandbox.RepoSandboxBinary + " review-daemon"},
-									map[string]interface{}{"name": "ENVBUILDER_IGNORE_PATHS", "value": "/var/run,/product_uuid,/product_name,/tokens,/repo-agent/"},
-									map[string]interface{}{"name": "GOCACHE", "value": sandbox.GoCachePath},
-									map[string]interface{}{"name": "GOMODCACHE", "value": sandbox.GoModCachePath},
-									map[string]interface{}{"name": "TMPDIR", "value": sandbox.TmpDirPath},
-								},
-								"volumeMounts": []interface{}{
-									map[string]interface{}{"name": "workspaces-pvc", "mountPath": "/workspaces"},
-									map[string]interface{}{"name": "tokens-secret", "mountPath": "/tokens", "readOnly": true},
-									map[string]interface{}{"name": "devcontainer-config", "mountPath": "/devcontainer.json", "subPath": "devcontainer.json"},
-									map[string]interface{}{"name": "agent-bin", "mountPath": "/opt/repo-agent"},
-								},
-								"ports": []interface{}{
-									map[string]interface{}{"containerPort": int64(13337)},
-									map[string]interface{}{"containerPort": int64(13339)},
-								},
-							},
-						},
-						"volumes": []interface{}{
-							map[string]interface{}{"name": "agent-bin", "emptyDir": map[string]interface{}{}},
-							map[string]interface{}{
-								"name": "devcontainer-config",
-								"configMap": map[string]interface{}{
-									"name": func() string {
-										if repoWatch.Spec.Review.DevcontainerConfigRef != "" {
-											return repoWatch.Spec.Review.DevcontainerConfigRef
-										}
-										return "devcontainer-json"
-									}(),
-								},
-							},
-							map[string]interface{}{
-								"name": "tokens-secret",
-								"secret": map[string]interface{}{
-									"secretName": repoWatch.Spec.Review.LLM.APIKeySecretRef,
-								},
-							},
-						},
-					},
-				},
-				"volumeClaimTemplates": []interface{}{
-					map[string]interface{}{
-						"metadata": map[string]interface{}{"name": "workspaces-pvc"},
-						"spec": map[string]interface{}{
-							"accessModes": []interface{}{"ReadWriteOnce"},
-							"resources": map[string]interface{}{
-								"requests": map[string]interface{}{
-									"storage": "10Gi",
-								},
-							},
-						},
-					},
-				},
-			},
+			UserLogin:   userLogin,
+			UserName:    userName,
+			UserEmail:   userEmail,
+			BotLogin:    botLogin,
+			BotName:     botName,
+			BotEmail:    botEmail,
+			LLMProvider: repoWatch.Spec.Review.LLM.Provider, LLMConfigdirRef: repoWatch.Spec.Review.LLM.ConfigdirRef,
+			LLMAPIKeySecretName:   repoWatch.Spec.Review.LLM.APIKeySecretRef,
+			Prompt:                repoWatch.Spec.Review.LLM.Prompt,
+			GithubSecretName:      githubSecretName,
+			DevcontainerConfigRef: repoWatch.Spec.Review.DevcontainerConfigRef,
+			Image:                 repoWatch.Spec.Review.Image,
+			RepoSandboxImage:      r.RepoSandboxImage,
+			ConfigDirImage:        r.ConfigDirImage,
+			HTTPEnabled:           true,
+			Replicas:              1,
+			ServiceAccountName:    "review-sandbox",
 		},
+		PRNumber:          *pr.Number,
+		PRTitle:           *pr.Title,
+		PRHTMLURL:         *pr.HTMLURL,
+		PRDiffURL:         *pr.DiffURL,
+		PRCloneURL:        fmt.Sprintf("%s#refs/heads/%s", *pr.Head.Repo.CloneURL, *pr.Head.Ref),
+		RepoName:          repoWatch.GetName(),
+		MaxReviewFiles:    repoWatch.Spec.Review.MaxReviewFiles,
+		IgnoreFiles:       repoWatch.Spec.Review.IgnoreFiles,
+		SeverityThreshold: repoWatch.Spec.Review.SeverityThreshold,
+		LLMExtensions:     repoWatch.Spec.Review.LLM.Extensions,
+		WorkspaceDiskSize: repoWatch.Spec.Review.WorkspaceDiskSize,
 	}
 
-	if err := controllerutil.SetControllerReference(repoWatch, sandbox, r.Scheme); err != nil {
+	sb, svc := sandbox.NewReviewSandbox(opt)
+
+	if err := controllerutil.SetControllerReference(repoWatch, sb, r.Scheme); err != nil {
 		return err
 	}
 
-	if err := r.Create(ctx, sandbox); err != nil {
+	if err := r.Create(ctx, sb); err != nil {
 		return err
 	}
 
-	serviceName := fmt.Sprintf("devc-%s-lb", sandboxName)
-	service := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "v1",
-			"kind":       "Service",
-			"metadata": map[string]interface{}{
-				"name":      serviceName,
-				"namespace": repoWatch.Namespace,
-			},
-			"spec": map[string]interface{}{
-				"selector": map[string]interface{}{
-					"sandbox": fmt.Sprintf("devc-%s", sandboxName),
-				},
-				"ports": []interface{}{
-					map[string]interface{}{
-						"name":        "code-server",
-						"protocol":    "TCP",
-						"port":        int64(13338),
-						"targetPort":  int64(13337),
-						"appProtocol": "kubernetes.io/ws",
-					},
-					map[string]interface{}{
-						"name":       "agent-server",
-						"protocol":   "TCP",
-						"port":       int64(13339),
-						"targetPort": int64(13339),
-					},
-				},
-			},
-		},
-	}
-
-	if err := controllerutil.SetControllerReference(repoWatch, service, r.Scheme); err != nil {
+	if err := controllerutil.SetControllerReference(repoWatch, svc, r.Scheme); err != nil {
 		log.Error(err, "failed to set owner ref on service")
 	}
 
-	if err := r.Create(ctx, service); err != nil {
+	if err := r.Create(ctx, svc); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return err
 		}
 	}
 
-	if err := r.createSandboxTask(ctx, repoWatch, sandbox, sandboxName, "", "review", map[string]string{
+	if err := r.createSandboxTask(ctx, repoWatch, sb, sandboxName, "", "review", map[string]string{
 		"AGENT_PROMPT": prompt,
 	}); err != nil {
 		log.Error(err, "unable to create initial review task for sandbox", "sandbox", sandboxName)
@@ -1470,7 +1361,7 @@ func randString(n int) string {
 	return string(b)
 }
 
-func (r *Reconciler) reconcileDevSandboxes(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, upstreamRepo string) error {
+func (r *Reconciler) reconcileDevSandboxes(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, ghClient *github.Client, upstreamRepo string, podsBySandbox map[string]*corev1.Pod) error {
 	log := log.FromContext(ctx)
 
 	if repoWatch.Spec.Dev.MaxSandboxes == 0 {
@@ -1495,7 +1386,7 @@ func (r *Reconciler) reconcileDevSandboxes(ctx context.Context, user *github.Use
 		return err
 	}
 
-	watchedDevSandboxes, pendingDevBranches, err := r.reconcileDevSandboxesInternal(ctx, user, repoWatch, branches, forkOwner, forkRepo)
+	watchedDevSandboxes, pendingDevBranches, err := r.reconcileDevSandboxesInternal(ctx, user, repoWatch, branches, forkOwner, forkRepo, podsBySandbox)
 	if err != nil {
 		return err
 	}
@@ -1601,19 +1492,21 @@ func (r *Reconciler) getDevCandidateBranches(ctx context.Context, ghClient *gith
 	return sortedBranches, nil
 }
 
-func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, branches []*github.Branch, forkOwner, forkRepo string) ([]reviewv1alpha1.DevSandbox, []string, error) {
+func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, branches []*github.Branch, forkOwner, forkRepo string, podsBySandbox map[string]*corev1.Pod) ([]reviewv1alpha1.DevSandbox, []string, error) {
 	log := log.FromContext(ctx)
 	// 6. List Existing DevSandboxes
 	sandboxList := &unstructured.UnstructuredList{}
 	sandboxGVK := schema.GroupVersionKind{
-		Group:   "custom.agents.x-k8s.io",
+		Group:   "agents.x-k8s.io",
 		Version: "v1alpha1",
-		Kind:    "IssueSandbox",
+		Kind:    "Sandbox",
 	}
 	sandboxList.SetGroupVersionKind(sandboxGVK)
 	if err := r.List(ctx, sandboxList, client.InNamespace(repoWatch.Namespace), client.MatchingLabels{"sandbox.gemini.google.com/type": "dev"}); err != nil {
 		return nil, nil, fmt.Errorf("listing dev sandboxes: %w", err)
 	}
+
+	ownedSandboxes := getOwnedSandboxes(sandboxList.Items, repoWatch.UID)
 
 	activeSandboxes := 0
 	watchedDevSandboxes := []reviewv1alpha1.DevSandbox{}
@@ -1625,22 +1518,11 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 		desiredBranches[b.GetName()] = true
 	}
 
-	for _, sandbox := range sandboxList.Items {
-		isOwned := false
-		for _, ownerRef := range sandbox.GetOwnerReferences() {
-			if ownerRef.UID == repoWatch.UID {
-				isOwned = true
-				break
-			}
-		}
-		if !isOwned {
-			continue
-		}
-
-		// Get branch from spec
-		branch, found, err := unstructured.NestedString(sandbox.Object, "spec", "destination", "branch")
-		if err != nil || !found {
-			log.Error(err, "unable to get branch from sandbox", "sandbox", sandbox.GetName())
+	for _, sandbox := range ownedSandboxes {
+		// Get branch from annotations
+		branch := sandbox.GetAnnotations()["sandbox.gemini.google.com/branch"]
+		if branch == "" {
+			log.Error(nil, "unable to get branch from sandbox annotations", "sandbox", sandbox.GetName())
 			continue
 		}
 
@@ -1662,10 +1544,16 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 		if !scaledDown {
 			activeSandboxes++
 		}
+
+		sandboxStatus, err := r.reconcileSandboxPodStatus(ctx, &sandbox, podsBySandbox, scaledDown)
+		if err != nil {
+			log.Error(err, "unable to reconcile sandbox pod status", "sandbox", sandbox.GetName())
+		}
+
 		watchedDevSandboxes = append(watchedDevSandboxes, reviewv1alpha1.DevSandbox{
 			BranchName:  branch,
 			SandboxName: sandbox.GetName(),
-			Status:      "Active",
+			Status:      sandboxStatus,
 			ScaledDown:  scaledDown,
 		})
 
@@ -1684,7 +1572,7 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 		// hashing ensures we don't exceed this limit
 		fullSuffix := fmt.Sprintf("dev-%s-%s", forkRepo, safeBranchName)
 		hashedSuffix := NameHash(fullSuffix)
-		sandboxName := fmt.Sprintf("%s-dev", hashedSuffix)
+		sandboxName := fmt.Sprintf("dev-%s", hashedSuffix)
 
 		// Check if sandbox exists
 		sandboxExists := false
@@ -1720,24 +1608,33 @@ func (r *Reconciler) reconcileDevSandboxesInternal(ctx context.Context, user *gi
 }
 
 func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, repoWatch *reviewv1alpha1.RepoWatch, forkOwner, forkRepo, branchName, sandboxName string) error {
-	cloneURL := fmt.Sprintf("https://github.com/%s/%s.git", forkOwner, forkRepo)
+	cloneURL := strings.TrimSuffix(repoWatch.Spec.RepoURL, ".git") + ".git"
 	originURL := fmt.Sprintf("github.com/%s/%s.git", forkOwner, forkRepo)
+
+	userLogin := user.GetLogin()
+	userName := user.GetName()
+	if userName == "" {
+		userName = userLogin
+	}
+	userEmail := user.GetEmail()
 
 	opts := sandbox.DevSandboxOptions{
 		Name:      sandboxName,
 		Namespace: repoWatch.Namespace,
 		Labels: map[string]string{
 			"review.gemini.google.com/repowatch": repoWatch.Name,
+			"sandbox.gemini.google.com/type":     "dev",
+			"sandbox-type":                       "dev",
 		},
 		CloneURL: cloneURL,
-		HTMLURL:  fmt.Sprintf("https://github.com/%s/%s", forkOwner, forkRepo),
+		HTMLURL:  strings.TrimSuffix(repoWatch.Spec.RepoURL, ".git"),
 
 		Branch:      branchName,
 		Origin:      originURL,
 		PushEnabled: true,
-		UserLogin:   user.GetLogin(),
-		UserName:    user.GetName(),
-		UserEmail:   user.GetEmail(),
+		UserLogin:   userLogin,
+		UserName:    userName,
+		UserEmail:   userEmail,
 
 		LLMProvider:         repoWatch.Spec.Dev.LLM.Provider,
 		LLMConfigdirRef:     repoWatch.Spec.Dev.LLM.ConfigdirRef,
@@ -1753,6 +1650,7 @@ func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, re
 		Replicas:           1,
 		ServiceAccountName: "issue-sandbox",
 		DindSupport:        repoWatch.Spec.Dev.DindSupport,
+		WorkspaceDiskSize:  repoWatch.Spec.Dev.WorkspaceDiskSize,
 	}
 
 	sb, svc := sandbox.NewDevSandbox(opts)
@@ -1775,7 +1673,7 @@ func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, re
 	}
 
 	params := map[string]string{
-		"REPO_URL":          opts.HTMLURL, // HTMLURL is https://github.com/owner/repo
+		"REPO_URL":          opts.CloneURL, // CloneURL is the upstream repository URL
 		"BRANCH_NAME":       branchName,
 		"GITHUB_USER_LOGIN": opts.UserLogin,
 		"GITHUB_USER_EMAIL": opts.UserEmail,
@@ -1783,6 +1681,10 @@ func (r *Reconciler) createDevSandbox(ctx context.Context, user *github.User, re
 	}
 	if repoWatch.Spec.Dev.LLM.Prompt != "" {
 		params["AGENT_PROMPT"] = repoWatch.Spec.Dev.LLM.Prompt
+	}
+	if len(repoWatch.Spec.Dev.LLM.Extensions) > 0 {
+		exts, _ := json.Marshal(repoWatch.Spec.Dev.LLM.Extensions)
+		params["AGENT_LLM_EXTENSIONS"] = string(exts)
 	}
 
 	return r.createSandboxTask(ctx, repoWatch, sb, sb.GetName(), "", "dev-setup", params)
@@ -1962,12 +1864,13 @@ func (r *Reconciler) reconcileIssueFeedback(ctx context.Context, repoWatch *revi
 	var lastAddressFeedbackTaskTime time.Time
 
 	for _, task := range tasks.Items {
-		if task.Spec.Type == "address-feedback" {
-			state := task.Status.TaskState
-			if state == "" || state == "Pending" || state == "Running" {
-				activeTaskExists = true
-			}
+		// If ANY task is active, skip creating a new one
+		state := task.Status.TaskState
+		if state == "" || state == "Pending" || state == "Running" {
+			activeTaskExists = true
+		}
 
+		if task.Spec.Type == "address-feedback" {
 			// Track the latest address-feedback task
 			if task.CreationTimestamp.Time.After(lastAddressFeedbackTaskTime) {
 				lastAddressFeedbackTaskTime = task.CreationTimestamp.Time
@@ -2056,6 +1959,10 @@ func (r *Reconciler) reconcileIssueFeedback(ctx context.Context, repoWatch *revi
 		if repoWatch.Spec.Issue.LLM.ConfigdirRef != "" {
 			params["AGENT_LLM_CONFIGDIR"] = repoWatch.Spec.Issue.LLM.ConfigdirRef
 		}
+		if len(repoWatch.Spec.Issue.LLM.Extensions) > 0 {
+			exts, _ := json.Marshal(repoWatch.Spec.Issue.LLM.Extensions)
+			params["AGENT_LLM_EXTENSIONS"] = string(exts)
+		}
 		if len(repoWatch.Spec.Issue.Models) > 0 {
 			params["model"] = strings.Join(repoWatch.Spec.Issue.Models, ",")
 		}
@@ -2073,6 +1980,144 @@ func (r *Reconciler) reconcileIssueFeedback(ctx context.Context, repoWatch *revi
 		}
 
 		return r.createSandboxTask(ctx, repoWatch, sandbox, sandbox.GetName(), "", "address-feedback", params)
+	}
+
+	return nil
+}
+
+func (r *Reconciler) reconcilePRFailures(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, sandbox *unstructured.Unstructured, issue *github.Issue, ghClient *github.Client) error {
+	log := log.FromContext(ctx)
+
+	// Check if we have an active task
+	tasks := &sandboxtaskv1alpha1.SandboxTaskList{}
+	if err := r.List(ctx, tasks, client.InNamespace(sandbox.GetNamespace()), client.MatchingLabels{"sandbox.gemini.google.com/sandbox-name": sandbox.GetName()}); err != nil {
+		return err
+	}
+
+	if len(tasks.Items) == 0 {
+		return nil
+	}
+
+	activeTaskExists := false
+	var lastInvestigateFailuresTaskTime time.Time
+
+	for _, task := range tasks.Items {
+		// If ANY task is active, skip creating a new one
+		state := task.Status.TaskState
+		if state == "" || state == "Pending" || state == "Running" {
+			activeTaskExists = true
+		}
+
+		if task.Spec.Type == "investigate-failures" {
+			// Track the latest investigate-failures task
+			if task.CreationTimestamp.Time.After(lastInvestigateFailuresTaskTime) {
+				lastInvestigateFailuresTaskTime = task.CreationTimestamp.Time
+			}
+		}
+	}
+
+	if activeTaskExists {
+		return nil
+	}
+
+	owner, repo, err := parseRepoURL(repoWatch.Spec.RepoURL)
+	if err != nil {
+		return err
+	}
+
+	pr, err := r.getLinkedPRFromSandbox(ctx, ghClient, sandbox)
+	if err != nil {
+		return err
+	}
+	if pr == nil {
+		return nil
+	}
+
+	if pr.GetState() != "open" {
+		return nil
+	}
+
+	// Check for failures on the latest commit (HEAD)
+	sha := pr.GetHead().GetSHA()
+
+	// 1. Check Statuses
+	combinedStatus, _, err := ghClient.Repositories.GetCombinedStatus(ctx, owner, repo, sha, nil)
+	if err != nil {
+		log.Error(err, "unable to get combined status", "sha", sha)
+		return nil
+	}
+
+	failed := false
+	if combinedStatus.GetState() == "failure" || combinedStatus.GetState() == "error" {
+		failed = true
+	}
+
+	// 2. Check CheckRuns
+	if !failed {
+		checkRuns, _, err := ghClient.Checks.ListCheckRunsForRef(ctx, owner, repo, sha, nil)
+		if err != nil {
+			log.Error(err, "unable to list check runs", "sha", sha)
+			return nil
+		}
+		for _, cr := range checkRuns.CheckRuns {
+			if cr.GetConclusion() == "failure" || cr.GetConclusion() == "timed_out" || cr.GetConclusion() == "action_required" {
+				failed = true
+				break
+			}
+		}
+	}
+
+	if failed {
+		// Get head commit time to avoid re-triggering for the same commit if we already tried
+		commit, _, err := ghClient.Repositories.GetCommit(ctx, owner, repo, sha, nil)
+		if err != nil {
+			log.Error(err, "unable to get head commit", "sha", sha)
+			return nil
+		}
+		latestCommitTime := commit.GetCommit().GetCommitter().GetDate()
+
+		if !lastInvestigateFailuresTaskTime.IsZero() && lastInvestigateFailuresTaskTime.After(latestCommitTime) {
+			log.Info("Skipping investigate-failures: last attempt was after latest commit", "pr", *pr.Number, "lastAttempt", lastInvestigateFailuresTaskTime, "latestCommit", latestCommitTime)
+			return nil
+		}
+
+		log.Info("Found failures on latest commit, creating investigate-failures task", "pr", pr.Number, "sha", sha)
+		params := map[string]string{
+			"PULL_REQUEST_ID": fmt.Sprintf("%d", *pr.Number),
+			"ISSUE_URL":       *issue.HTMLURL,
+			"AGENT_PROMPT":    repoWatch.Spec.Issue.LLM.Prompt,
+		}
+		// Add LLM params
+		if repoWatch.Spec.Issue.LLM.Provider != "" {
+			params["AGENT_LLM_PROVIDER"] = repoWatch.Spec.Issue.LLM.Provider
+		}
+		if repoWatch.Spec.Issue.LLM.APIKeySecretRef != "" {
+			params["AGENT_LLM_API_KEY_SECRET"] = repoWatch.Spec.Issue.LLM.APIKeySecretRef
+		}
+		if repoWatch.Spec.Issue.LLM.ConfigdirRef != "" {
+			params["AGENT_LLM_CONFIGDIR"] = repoWatch.Spec.Issue.LLM.ConfigdirRef
+		}
+		if len(repoWatch.Spec.Issue.LLM.Extensions) > 0 {
+			exts, _ := json.Marshal(repoWatch.Spec.Issue.LLM.Extensions)
+			params["AGENT_LLM_EXTENSIONS"] = string(exts)
+		}
+		if len(repoWatch.Spec.Issue.Models) > 0 {
+			params["model"] = strings.Join(repoWatch.Spec.Issue.Models, ",")
+		}
+
+		// Ensure sandbox is scaled up
+		replicas, found, err := unstructured.NestedInt64(sandbox.Object, "spec", "replicas")
+		if err != nil || !found || replicas == 0 {
+			if err := unstructured.SetNestedField(sandbox.Object, int64(1), "spec", "replicas"); err != nil {
+				log.Error(err, "unable to set replicas to 1")
+			} else {
+				if err := r.Update(ctx, sandbox); err != nil {
+					log.Error(err, "unable to scale up sandbox")
+				}
+			}
+		}
+
+		return r.createSandboxTask(ctx, repoWatch, sandbox, sandbox.GetName(), "", "investigate-failures", params)
 	}
 
 	return nil
@@ -2175,20 +2220,65 @@ func (r *Reconciler) hasNewFeedback(ctx context.Context, ghClient *github.Client
 	return found, latestFeedbackTime, nil
 }
 
-func (r *Reconciler) reconcileOverseer(ctx context.Context, repoWatch *reviewv1alpha1.RepoWatch, user *github.User) error {
+func (r *Reconciler) reconcileSandboxPodStatus(ctx context.Context, sandbox *unstructured.Unstructured, podsBySandbox map[string]*corev1.Pod, scaledDown bool) (string, error) {
 	log := log.FromContext(ctx)
-
-	log.Info("reconciling overseer", "enabled", repoWatch.Spec.Overseer != nil && repoWatch.Spec.Overseer.Enabled)
-	if err := overseer.Reconcile(ctx, r.Client, repoWatch, &pkg_github.User{
-		UserID: user.GetLogin(),
-		Name:   user.GetName(),
-		Email:  user.GetEmail(),
-	}, r.RepoSandboxImage, r.ConfigDirImage); err != nil {
-		return err
+	podName := sandbox.GetName()
+	pod := podsBySandbox[podName]
+	sandboxStatus := "Active"
+	if scaledDown {
+		sandboxStatus = "ScaledDown"
 	}
 
-	if repoWatch.Spec.Overseer != nil && repoWatch.Spec.Overseer.Enabled {
-		return r.Status().Update(ctx, repoWatch)
+	podStatusStr := ""
+	if pod != nil {
+		if pod.Status.Reason == "Evicted" {
+			if pod.Status.Message != "" {
+				podStatusStr = fmt.Sprintf("Evicted: %s", pod.Status.Message)
+			} else {
+				podStatusStr = "Evicted"
+			}
+		} else if pod.Status.Phase == corev1.PodFailed {
+			podStatusStr = fmt.Sprintf("fail: %s", pod.Status.Reason)
+		} else if pod.Status.Phase == corev1.PodPending {
+			podStatusStr = "Pending"
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodScheduled && cond.Status == corev1.ConditionFalse {
+					podStatusStr = fmt.Sprintf("Pending: %s", cond.Message)
+					break
+				}
+			}
+		} else {
+			podStatusStr = string(pod.Status.Phase)
+		}
+		sandboxStatus = podStatusStr
 	}
-	return nil
+
+	updateAnnotation := false
+	annotations := sandbox.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	shouldPersist := podStatusStr != ""
+	if shouldPersist {
+		if annotations["sandbox.gemini.google.com/pod-status"] != podStatusStr {
+			annotations["sandbox.gemini.google.com/pod-status"] = podStatusStr
+			updateAnnotation = true
+		}
+	} else {
+		if _, ok := annotations["sandbox.gemini.google.com/pod-status"]; ok {
+			delete(annotations, "sandbox.gemini.google.com/pod-status")
+			updateAnnotation = true
+		}
+	}
+
+	if updateAnnotation {
+		sandbox.SetAnnotations(annotations)
+		if err := r.Update(ctx, sandbox); err != nil {
+			log.Error(err, "failed to update sandbox annotation for pod status", "sandbox", sandbox.GetName())
+			return sandboxStatus, err
+		}
+	}
+
+	return sandboxStatus, nil
 }

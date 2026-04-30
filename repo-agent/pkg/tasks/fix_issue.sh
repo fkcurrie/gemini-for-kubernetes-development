@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 set -x
 
 # It expects the following environment variables to be set:
@@ -8,12 +9,24 @@ set -x
 
 export REPO_OWNER="{{ .Repo.Owner }}"
 export REPO_NAME="{{ .Repo.Name }}"
-export CLONE_URL={{ .Repo.CloneURL }}
+export CLONE_URL="{{ .Repo.CloneURL }}"
 export ISSUE_NUMBER={{ .Issue.Number }}
 export PROMPT_FILE="{{ .PromptFile }}"
-export GITHUB_USER_ID={{ .User.UserID }}
-export GITHUB_USER_EMAIL={{ .User.Email }}
+export GITHUB_USER_ID="{{ .User.UserID }}"
+export GITHUB_USER_EMAIL="{{ .User.Email }}"
 export GITHUB_USER_NAME="{{ .User.Name }}"
+
+export GITHUB_USER_TOKEN="${GITHUB_USER_TOKEN:-${GITHUB_TOKEN}}"
+if [ -z "$GITHUB_USER_TOKEN" ]; then
+    # Try other common names
+    GITHUB_USER_TOKEN="${MANUAL_PAT:-${OAUTH_PAT}}"
+fi
+
+if [ -n "${GITHUB_BOT_LOGIN}" ]; then
+    if [ -n "${GITHUB_BOT_TOKEN}" ] || [ -n "${GITHUB_BOT_OAUTH_PAT}" ] || [ -n "${GITHUB_BOT_MANUAL_PAT}" ]; then
+        GITHUB_USER_TOKEN="${GITHUB_BOT_TOKEN:-${GITHUB_BOT_MANUAL_PAT:-${GITHUB_BOT_OAUTH_PAT}}}"
+    fi
+fi
 
 function setupGit {
     echo "Running setupGit..."
@@ -40,18 +53,25 @@ EOF
     if [ -n "$GITHUB_BOT_EMAIL" ]; then
         git config --global user.email "${GITHUB_BOT_EMAIL}"
     else
-        git config --global user.email ${GITHUB_USER_EMAIL}
+        git config --global user.email "${GITHUB_USER_EMAIL}"
     fi
 
     echo "running git config user.name"
     if [ -n "$GITHUB_BOT_NAME" ]; then
         git config --global user.name "${GITHUB_BOT_NAME}"
     else
-        git config --global user.name ${GITHUB_USER_NAME}
+        git config --global user.name "${GITHUB_USER_NAME}"
     fi
 
     echo "running gh auth setup-git"
     gh auth setup-git
+
+    echo "Configuring global git ignore"
+    git config --global core.excludesfile /root/.gitignore_global
+    cat <<EOF > /root/.gitignore_global
+manager
+bin/
+EOF
 }
 
 function setupGitRepos {
@@ -86,7 +106,7 @@ function checkForExistingPR {
     local pr_url=$(gh search prs "${ISSUE_NUMBER}" --state open --repo "${REPO_OWNER}/${REPO_NAME}" --author "${GITHUB_USER_ID}" --json url --jq '.[0] | "\(.url)"' --limit 1)
 
     # If not found, look for any PR
-    if [ -z "$pr_info" ] || [ "$pr_info" == "null" ]; then
+    if [ -z "$pr_number" ] || [ "$pr_number" == "null" ]; then
         pr_number=$(gh search prs "${ISSUE_NUMBER}" --repo "${REPO_OWNER}/${REPO_NAME}" --state open --json number --jq '.[0] | "\(.number)"' --limit 1)
         pr_url=$(gh search prs "${ISSUE_NUMBER}" --repo "${REPO_OWNER}/${REPO_NAME}" --state open --json url --jq '.[0] | "\(.url)"' --limit 1)
     fi
@@ -112,7 +132,11 @@ function checkForExistingPR {
 function checkoutNewBranch {
     echo "Running checkoutNewBranch..."
     echo "creating new branch"
-    (cd "/workspaces/${REPO_NAME}" && git checkout -b "issue_${ISSUE_NUMBER}")
+    local branch_name="issue-${ISSUE_NUMBER}"
+    {{- if .Branch }}
+    branch_name="{{ .Branch }}"
+    {{- end }}
+    (cd "/workspaces/${REPO_NAME}" && git checkout -B "$branch_name")
 }
 
 function configureGemini {
@@ -129,6 +153,13 @@ function configureGemini {
   }
 }
 EOF
+}
+
+function installExtensions {
+    echo "Installing extensions..."
+    {{- range .Extensions }}
+    gemini extensions install "{{ .Source }}" {{ if .Ref }}--ref "{{ .Ref }}"{{ end }} --consent
+    {{- end }}
 }
 
 function runGemini {
@@ -149,7 +180,7 @@ function runGemini {
     SUCCESS=false
     for MODEL in "${MODELS[@]}"; do
         echo "Trying model: $MODEL"
-        if gemini --yolo --model "$MODEL" < ${PROMPT_FILE}; then
+        if gemini --yolo --model "$MODEL" --output-format stream-json < ${PROMPT_FILE} | /opt/repo-agent/gemini-stream-processor --output "$(dirname "${PROMPT_FILE}")/gemini-output.json"; then
             echo "Gemini execution successful with model: $MODEL"
             SUCCESS=true
             break
@@ -166,9 +197,49 @@ function runGemini {
     popd > /dev/null
 }
 
-function recordPRLink {
+function injectConfigDirData {
     pushd "/workspaces/${REPO_NAME}" > /dev/null
-    gh pr status --json url --jq  .currentBranch.url > "$(dirname "${PROMPT_FILE}")/agent-output.txt"
+    if [ -d "/configdir" ] && [ "$(ls -A /configdir)" ]; then
+      echo "Injecting configdir files into repository..."
+      shopt -s dotglob
+      cp -R /configdir/* .
+      shopt -u dotglob
+    fi
+    popd > /dev/null
+}
+
+function recordPRLink {
+    echo "Recording PR link..."
+    pushd "/workspaces/${REPO_NAME}" > /dev/null
+    local output_file="$(dirname "${PROMPT_FILE}")/agent-output.txt"
+    local pr_url=""
+
+    # Try current branch PR status
+    echo "Checking pr status..."
+    pr_url=$(gh pr status --json url --jq '.currentBranch.url // empty')
+
+    # If not found, try listing PRs for this branch
+    if [ -z "$pr_url" ] || [ "$pr_url" == "null" ]; then
+        echo "Checking pr list by branch..."
+        pr_url=$(gh pr list --head "issue_${ISSUE_NUMBER}" --json url --jq '.[0].url // empty')
+    fi
+
+    # If still not found, try searching PRs by issue number and author
+    if [ -z "$pr_url" ] || [ "$pr_url" == "null" ]; then
+        echo "Searching for PR..."
+        pr_url=$(gh search prs "${ISSUE_NUMBER}" --state open --repo "${REPO_OWNER}/${REPO_NAME}" --author "${GITHUB_USER_ID}" --json url --jq '.[0].url // empty' --limit 1)
+    fi
+
+    if [ -n "$pr_url" ] && [ "$pr_url" != "null" ]; then
+        echo "Successfully found PR: ${pr_url}"
+        echo "${pr_url}" > "$output_file"
+    else
+        echo "Could not find PR link automatically."
+        # Don't overwrite if it already exists (unlikely here but safe)
+        if [ ! -s "$output_file" ]; then
+            echo "Could not find PR link automatically." > "$output_file"
+        fi
+    fi
     popd > /dev/null
 }
 
@@ -180,5 +251,7 @@ sleep 5
 checkForExistingPR
 checkoutNewBranch
 configureGemini
+installExtensions
+injectConfigDirData
 runGemini
 recordPRLink

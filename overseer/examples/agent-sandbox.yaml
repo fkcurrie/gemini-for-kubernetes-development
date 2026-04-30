@@ -1,0 +1,20 @@
+apiVersion: overseer.gemini.google.com/v1alpha1
+kind: Overseer
+metadata:
+  name: agent-sandbox
+spec:
+  repoURL: https://github.com/kubernetes-sigs/agent-sandbox
+  robotAccount: codebot-robot
+  maxActiveReviews: 3
+  maxActiveIssues: 3
+  chores:
+    mode: disabled
+  review:
+    severityThreshold: HIGH
+  geminiAPIKeySecretName: gemini-vscode-tokens
+  ephemeralStorage: 10Gi
+  image: ghcr.io/gke-labs/gemini-for-kubernetes-development/generic-golang:latest
+  repo:
+    issueMode: disabled
+    prMode: disabled
+    reviewMode: enabled

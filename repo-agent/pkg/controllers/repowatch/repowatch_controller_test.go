@@ -40,6 +40,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -199,6 +200,7 @@ func TestReconciler_Reconcile(t *testing.T) {
 		"GOCACHE":    sandbox.GoCachePath,
 		"GOMODCACHE": sandbox.GoModCachePath,
 		"TMPDIR":     sandbox.TmpDirPath,
+		"GOTMPDIR":   sandbox.TmpDirPath,
 	}
 
 	for name, value := range expectedEnv {
@@ -228,6 +230,7 @@ func TestReconciler_ReconcileIssues(t *testing.T) {
 	_ = clientgoscheme.AddToScheme(s)
 	_ = reviewv1alpha1.AddToScheme(s)
 	_ = sandboxtaskv1alpha1.AddToScheme(s)
+	_ = sandboxv1alpha1.AddToScheme(s)
 
 	// 2. Initialize the fake client with any initial objects
 	fakeClient := clientfake.NewClientBuilder().WithScheme(s).WithStatusSubresource(&reviewv1alpha1.RepoWatch{}).Build()
@@ -363,7 +366,7 @@ func TestReconciler_ReconcileIssues(t *testing.T) {
 	// So I should verify SandboxTask creation.
 
 	task := &sandboxtaskv1alpha1.SandboxTask{}
-	taskName := fmt.Sprintf("devc-%s-issue-10-test-handler", repoWatch.Name)
+	taskName := fmt.Sprintf("%s-issue-10-test-handler", repoWatch.Name)
 	g.Expect(fakeClient.Get(context.Background(), types.NamespacedName{Name: taskName, Namespace: objNamespace}, task)).To(gomega.Succeed())
 }
 
@@ -410,7 +413,7 @@ func TestReconcileIssueHandlerSandboxes(t *testing.T) {
 			"apiVersion": "agents.x-k8s.io/v1alpha1",
 			"kind":       "Sandbox",
 			"metadata": map[string]interface{}{
-				"name": "test-repowatch-issue-2", // Note: missing devc- prefix? If controller expects devc- prefix for parsing?
+				"name": "test-repowatch-issue-2", // Note: missing prefix? If controller expects prefix for parsing?
 				// The controller uses `getOwnedSandboxes` which filters by OwnerRef.
 				// Then it splits by `-issue-` or `-pr-`.
 				// If name is `test-repowatch-issue-2`, split by `-issue-` works.
@@ -489,8 +492,7 @@ func TestReconcileIssueHandlerSandboxes(t *testing.T) {
 		})
 		g.Expect(r.Client.List(context.Background(), sandboxList)).To(gomega.Succeed())
 		g.Expect(sandboxList.Items).To(gomega.HaveLen(1))
-		// The controller creates names with devc- prefix.
-		g.Expect(sandboxList.Items[0].GetName()).To(gomega.Equal(fmt.Sprintf("devc-%s-issue-1", repoWatch.Name)))
+		g.Expect(sandboxList.Items[0].GetName()).To(gomega.Equal(fmt.Sprintf("%s-issue-1", repoWatch.Name)))
 	})
 
 	// Test case 3: Not creating a new sandbox if it already exists.
@@ -501,7 +503,7 @@ func TestReconcileIssueHandlerSandboxes(t *testing.T) {
 				"apiVersion": "agents.x-k8s.io/v1alpha1",
 				"kind":       "Sandbox",
 				"metadata": map[string]interface{}{
-					"name":      "devc-test-repowatch-issue-1", // Must match controller naming
+					"name":      "test-repowatch-issue-1", // Must match controller naming
 					"namespace": "default",
 					"labels": map[string]interface{}{
 						"sandbox.gemini.google.com/type": "issue",
@@ -570,7 +572,7 @@ func TestReconcileIssueHandlerSandboxes(t *testing.T) {
 		})
 		g.Expect(r.Client.List(context.Background(), sandboxList)).To(gomega.Succeed())
 		g.Expect(sandboxList.Items).To(gomega.HaveLen(1)) // Only the existingIssueSandbox should exist
-		g.Expect(sandboxList.Items[0].GetName()).To(gomega.Equal("devc-test-repowatch-issue-1"))
+		g.Expect(sandboxList.Items[0].GetName()).To(gomega.Equal("test-repowatch-issue-1"))
 	})
 }
 
@@ -1280,7 +1282,7 @@ func TestReconcileReviewSandboxes_RespectsExistingActiveSandboxes(t *testing.T) 
 	openPRs := []*github.PullRequest{pr2, pr1}
 
 	// Call reconcile
-	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(context.Background(), repoWatch, []*github.PullRequest{}, openPRs, existingSandboxList)
+	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(context.Background(), &github.User{Login: github.String("test-user")}, repoWatch, []*github.PullRequest{}, openPRs, existingSandboxList, map[string]*corev1.Pod{})
 	repoWatch.Status.ReviewSandboxes = watchedPRs
 	repoWatch.Status.PendingPRs = pendingPRs
 	repoWatch.Status.ActiveSandboxCount = activeSandboxes

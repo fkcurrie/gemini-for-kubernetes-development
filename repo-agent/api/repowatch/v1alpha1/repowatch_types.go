@@ -25,6 +25,8 @@ const (
 	GeminiProvider = "gemini-cli"
 	// ClaudeProvider represents the Claude LLM provider.
 	ClaudeProvider = "claude"
+	// ClaudeCLIProvider represents the Claude Code CLI provider.
+	ClaudeCLIProvider = "claude-cli"
 	// Dummy provider for testing
 	DummyProvider = "dummy"
 
@@ -38,7 +40,7 @@ type LLMConfig struct {
 	// Provider is the name of the LLM provider to use. This field is used to
 	// determine which LLM client to instantiate and how to interact with the
 	// LLM API.
-	// +kubebuilder:validation:Enum=gemini-cli;claude;dummy
+	// +kubebuilder:validation:Enum=gemini-cli;claude;claude-cli;dummy
 	// +kubebuilder:default=gemini-cli
 	Provider string `json:"provider,omitempty"`
 
@@ -58,6 +60,22 @@ type LLMConfig struct {
 	// additional configuration for the LLM agent, such as tool schemas and
 	// model configurations.
 	ConfigdirRef string `json:"configdirRef,omitempty"`
+
+	// Extensions is a list of extensions to install in the sandbox
+	// before running the agent. Each entry specifies a source
+	// (GitHub URL or extension name) and optional ref.
+	// +kubebuilder:validation:Optional
+	Extensions []Extension `json:"extensions,omitempty"`
+}
+
+type Extension struct {
+	// Source is the GitHub URL or local path of the extension.
+	// +kubebuilder:validation:Required
+	Source string `json:"source"`
+
+	// Ref is the git ref (branch, tag, or commit) to install.
+	// +kubebuilder:validation:Optional
+	Ref string `json:"ref,omitempty"`
 }
 
 type PRReviewSpec struct {
@@ -88,6 +106,12 @@ type PRReviewSpec struct {
 	// +kubebuilder:validation:Optional
 	IgnoreFiles []string `json:"ignoreFiles,omitempty"`
 
+	// SeverityThreshold sets the minimum severity level for review comments to be posted.
+	// Comments below this threshold will be filtered out. Valid values: "LOW", "MEDIUM", "HIGH".
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Enum=LOW;MEDIUM;HIGH;CRITICAL
+	SeverityThreshold string `json:"severityThreshold,omitempty"`
+
 	// The time in minutes after which a review sandbox will be scaled down to 0 replicas.
 	// +kubebuilder:validation:Optional
 	ReviewShutdownAfterMinutes int `json:"reviewShutdownAfterMinutes,omitempty"`
@@ -106,10 +130,20 @@ type PRReviewSpec struct {
 	// +kubebuilder:validation:Optional
 	Labels [][]string `json:"labels"`
 
+	// ExcludeLabels specifies labels that should cause a PR to be skipped.
+	// PRs with any of these labels will not have sandboxes created for them.
+	// +kubebuilder:validation:Optional
+	ExcludeLabels []string `json:"excludeLabels,omitempty"`
+
 	// Assigned to self when selecting PRs for review
 	// If true, only PRs assigned to the user associated with the GitHub token will be considered in addition to the Asignees list.
 	// +kubebuilder:validation:Optional
 	AssignedToSelf bool `json:"assignedToSelf,omitempty"`
+
+	// WorkspaceDiskSize specifies the disk size for the workspace PVC.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="10Gi"
+	WorkspaceDiskSize string `json:"workspaceDiskSize,omitempty"`
 
 	// Assignees to filter PRs for this handler
 	// +kubebuilder:validation:Optional
@@ -175,6 +209,11 @@ type DevSpec struct {
 	// +kubebuilder:default=none
 	// +kubebuilder:validation:Optional
 	DindSupport string `json:"dindSupport,omitempty"`
+
+	// WorkspaceDiskSize specifies the disk size for the workspace PVC.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="10Gi"
+	WorkspaceDiskSize string `json:"workspaceDiskSize,omitempty"`
 }
 
 type IssueHandlerSpec struct {
@@ -185,6 +224,11 @@ type IssueHandlerSpec struct {
 	// Labels to filter issues for this handler
 	// +kubebuilder:validation:Optional
 	Labels []string `json:"labels"`
+
+	// ExcludeLabels specifies labels that should cause an issue to be skipped.
+	// Issues with any of these labels will not be processed by this handler.
+	// +kubebuilder:validation:Optional
+	ExcludeLabels []string `json:"excludeLabels,omitempty"`
 
 	// Prompt is the prompt to use for the LLM.
 	// +kubebuilder:validation:Optional
@@ -247,6 +291,11 @@ type IssueSpec struct {
 	// +kubebuilder:validation:Optional
 	DindSupport string `json:"dindSupport,omitempty"`
 
+	// WorkspaceDiskSize specifies the disk size for the workspace PVC.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default="10Gi"
+	WorkspaceDiskSize string `json:"workspaceDiskSize,omitempty"`
+
 	// Models specifies a list of models to use for the issue handler.
 	// +kubebuilder:validation:Optional
 	Models []string `json:"models,omitempty"`
@@ -254,17 +303,6 @@ type IssueSpec struct {
 	// Handlers configuration for Bugs
 	// +kubebuilder:validation:Optional
 	Handlers []IssueHandlerSpec `json:"handlers,omitempty"`
-}
-
-// OverseerSpec defines the configuration for the Overseer agent.
-type OverseerSpec struct {
-	// Image to use for the overseer.
-	// +kubebuilder:validation:Optional
-	Image string `json:"image,omitempty"`
-
-	// Enabled defines if the overseer is enabled.
-	// +kubebuilder:validation:Optional
-	Enabled bool `json:"enabled,omitempty"`
 }
 
 // RepoWatchSpec defines the desired state of RepoWatch
@@ -285,10 +323,6 @@ type RepoWatchSpec struct {
 	// Dev configuration for development sandboxes
 	// +kubebuilder:validation:Optional
 	Dev DevSpec `json:"dev,omitempty"`
-
-	// Overseer configuration
-	// +kubebuilder:validation:Optional
-	Overseer *OverseerSpec `json:"overseer,omitempty"`
 
 	// Secret containing the GitHub Personal Access Token (PAT) for accessing the repo.
 	// +kubebuilder:validation:Required
@@ -325,9 +359,6 @@ type RepoWatchStatus struct {
 
 	// +optional
 	PendingDevBranches []string `json:"pendingDevBranches,omitempty"`
-
-	// +optional
-	OverseerStatus string `json:"overseerStatus,omitempty"`
 }
 
 // WatchedPR defines the state of a watched PR

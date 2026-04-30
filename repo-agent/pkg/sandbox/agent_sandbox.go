@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"encoding/json"
+	"os"
 	"strconv"
 
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,24 +34,23 @@ type AgentSandboxOptions struct {
 	IssueRepo  string
 	Handler    string
 
-	// Bot info
-	BotLogin string
-	BotName  string
-	BotEmail string
-
-	// Resources
 	Resources   corev1.ResourceRequirements
 	DindSupport string
+
+	LLMExtensions []reviewv1alpha1.Extension
 }
 
 // NewAgentSandbox creates a new Sandbox (unstructured) and Service object.
 func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *corev1.Service) {
-	name := opt.Name
-	sandboxName := "devc-" + name
-
-	if opt.DevcontainerConfigRef == "" {
-		opt.DevcontainerConfigRef = "devcontainer-json"
+	if opt.RepoSandboxImage == "" {
+		opt.RepoSandboxImage = os.Getenv("REPO_SANDBOX_IMAGE")
 	}
+	if opt.ConfigDirImage == "" {
+		opt.ConfigDirImage = os.Getenv("CONFIGDIR_CLI_IMAGE")
+	}
+
+	name := opt.Name
+	sandboxName := name
 
 	// Default resources if not set
 	resources := opt.Resources
@@ -99,7 +101,25 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 		labels["sandbox.gemini.google.com/type"] = "issue"
 	}
 
+	if opt.IdeaID != "" {
+		labels["repo-agent.gemini.google.com/idea-id"] = opt.IdeaID
+	}
+	if opt.Approach != "" {
+		labels["repo-agent.gemini.google.com/approach"] = opt.Approach
+	}
+	if opt.ParentApproach != "" {
+		labels["repo-agent.gemini.google.com/parent-approach"] = opt.ParentApproach
+	}
+
 	// Environment variables
+	userName := opt.UserName
+	if userName == "" {
+		userName = opt.UserLogin
+	}
+	if userName == "" {
+		userName = "Unknown User"
+	}
+
 	env := []interface{}{
 		map[string]interface{}{"name": "NAMESPACE", "value": opt.Namespace},
 		map[string]interface{}{"name": "NAME", "value": sandboxName},
@@ -115,9 +135,9 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 		map[string]interface{}{"name": "ISSUE_URL", "value": opt.HTMLURL},
 		map[string]interface{}{"name": "GITHUB_USER_ORIGIN", "value": opt.Origin},
 		map[string]interface{}{"name": "GITHUB_USER_LOGIN", "value": opt.UserLogin},
-		map[string]interface{}{"name": "GITHUB_USER_NAME", "value": opt.UserName},
+		map[string]interface{}{"name": "GITHUB_USER_NAME", "value": userName},
 		map[string]interface{}{"name": "GITHUB_USER_EMAIL", "value": opt.UserEmail},
-		map[string]interface{}{"name": "GIT_AUTHOR_NAME", "value": opt.UserName},
+		map[string]interface{}{"name": "GIT_AUTHOR_NAME", "value": userName},
 		map[string]interface{}{"name": "GIT_AUTHOR_EMAIL", "value": opt.UserEmail},
 		map[string]interface{}{"name": "GITHUB_BOT_LOGIN", "value": opt.BotLogin},
 		map[string]interface{}{"name": "GITHUB_BOT_NAME", "value": opt.BotName},
@@ -152,6 +172,16 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 				},
 			},
 		},
+	}
+
+	if opt.LLMAPIKey != "" {
+		env = append(env, map[string]interface{}{
+			"name":  "GEMINI_API_KEY",
+			"value": opt.LLMAPIKey,
+		})
+	}
+
+	env = append(env,
 		map[string]interface{}{"name": "GIT_PUSH_ENABLED", "value": strconv.FormatBool(opt.PushEnabled)},
 		map[string]interface{}{"name": "GIT_CLONE_URL", "value": opt.CloneURL},
 		map[string]interface{}{"name": "ENVBUILDER_GIT_URL", "value": opt.CloneURL},
@@ -163,6 +193,26 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 		map[string]interface{}{"name": "GOCACHE", "value": GoCachePath},
 		map[string]interface{}{"name": "GOMODCACHE", "value": GoModCachePath},
 		map[string]interface{}{"name": "TMPDIR", "value": TmpDirPath},
+		map[string]interface{}{"name": "GOTMPDIR", "value": TmpDirPath},
+	)
+
+	if opt.OverseerName != "" {
+		env = append(env, map[string]interface{}{"name": "OVERSEER_NAME", "value": opt.OverseerName})
+	}
+	if opt.RepoSandboxImage != "" {
+		env = append(env, map[string]interface{}{"name": "REPO_SANDBOX_IMAGE", "value": opt.RepoSandboxImage})
+	}
+	if opt.ConfigDirImage != "" {
+		env = append(env, map[string]interface{}{"name": "CONFIG_DIR_IMAGE", "value": opt.ConfigDirImage})
+	}
+	if len(opt.LLMExtensions) > 0 {
+		exts, err := json.Marshal(opt.LLMExtensions)
+		if err == nil {
+			env = append(env, map[string]interface{}{
+				"name":  "AGENT_LLM_EXTENSIONS",
+				"value": string(exts),
+			})
+		}
 	}
 
 	image := opt.Image
@@ -188,6 +238,8 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 	opt.Annotations["sandbox.gemini.google.com/html-url"] = opt.HTMLURL
 	opt.Annotations["sandbox.gemini.google.com/clone-url"] = opt.CloneURL
 	opt.Annotations["sandbox.gemini.google.com/user-login"] = opt.UserLogin
+	opt.Annotations["sandbox.gemini.google.com/bot-login"] = opt.BotLogin
+	opt.Annotations["sandbox.gemini.google.com/origin"] = opt.Origin
 	opt.Annotations["sandbox.gemini.google.com/branch"] = opt.Branch
 	opt.Annotations["sandbox.gemini.google.com/push-enabled"] = strconv.FormatBool(opt.PushEnabled)
 
@@ -243,24 +295,28 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 							}
 							return nil
 						}(),
-						"initContainers": []interface{}{
-							map[string]interface{}{
-								"name":  "gemini-configs",
-								"image": opt.ConfigDirImage,
-								"args":  []interface{}{"--directory", "/workspaces", "--namespace", opt.Namespace, "--name", opt.LLMConfigdirRef, "--ignore-not-found-error"},
-								"volumeMounts": []interface{}{
-									map[string]interface{}{"name": "workspaces-pvc", "mountPath": "/workspaces"},
-								},
-							},
-							map[string]interface{}{
+						"initContainers": func() []interface{} {
+							containers := []interface{}{}
+							if opt.LLMConfigdirRef != "" {
+								containers = append(containers, map[string]interface{}{
+									"name":  "gemini-configs",
+									"image": opt.ConfigDirImage,
+									"args":  []interface{}{"--directory", "/configdir", "--namespace", opt.Namespace, "--name", opt.LLMConfigdirRef, "--ignore-not-found-error"},
+									"volumeMounts": []interface{}{
+										map[string]interface{}{"name": "configdir-vol", "mountPath": "/configdir"},
+									},
+								})
+							}
+							containers = append(containers, map[string]interface{}{
 								"name":    "inject-agent",
 								"image":   opt.RepoSandboxImage,
 								"command": []interface{}{"/repo-agent/repo-sandbox", "inject", "--path", "/opt/repo-agent"},
 								"volumeMounts": []interface{}{
 									map[string]interface{}{"name": "agent-bin", "mountPath": "/opt/repo-agent"},
 								},
-							},
-						},
+							})
+							return containers
+						}(),
 						"containers": []interface{}{
 							map[string]interface{}{
 								"name":    "sandbox",
@@ -294,10 +350,15 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 								"env": env,
 								"volumeMounts": func() []interface{} {
 									vm := []interface{}{
+										map[string]interface{}{"name": "configdir-vol", "mountPath": "/configdir"},
 										map[string]interface{}{"name": "workspaces-pvc", "mountPath": "/workspaces"},
-										map[string]interface{}{"name": "tokens-secret", "mountPath": "/tokens", "readOnly": true},
-										map[string]interface{}{"name": "devcontainer-config", "mountPath": "/devcontainer.json", "subPath": "devcontainer.json"},
 										map[string]interface{}{"name": "agent-bin", "mountPath": "/opt/repo-agent"},
+									}
+									if opt.LLMAPIKey == "" {
+										vm = append(vm, map[string]interface{}{"name": "tokens-secret", "mountPath": "/tokens", "readOnly": true})
+									}
+									if opt.DevcontainerConfigRef != "" {
+										vm = append(vm, map[string]interface{}{"name": "devcontainer-config", "mountPath": "/devcontainer.json", "subPath": "devcontainer.json"})
 									}
 									if opt.DindSupport != "" && opt.DindSupport != DindSupportNone {
 										vm = append(vm, map[string]interface{}{"name": "docker", "mountPath": "/var/lib/docker"})
@@ -313,21 +374,29 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 						"volumes": func() []interface{} {
 							v := []interface{}{
 								map[string]interface{}{
-									"name":     "agent-bin",
+									"name":     "configdir-vol",
 									"emptyDir": map[string]interface{}{},
 								},
 								map[string]interface{}{
-									"name": "devcontainer-config",
-									"configMap": map[string]interface{}{
-										"name": opt.DevcontainerConfigRef,
-									},
+									"name":     "agent-bin",
+									"emptyDir": map[string]interface{}{},
 								},
-								map[string]interface{}{
+							}
+							if opt.LLMAPIKey == "" {
+								v = append(v, map[string]interface{}{
 									"name": "tokens-secret",
 									"secret": map[string]interface{}{
 										"secretName": opt.LLMAPIKeySecretName,
 									},
-								},
+								})
+							}
+							if opt.DevcontainerConfigRef != "" {
+								v = append(v, map[string]interface{}{
+									"name": "devcontainer-config",
+									"configMap": map[string]interface{}{
+										"name": opt.DevcontainerConfigRef,
+									},
+								})
 							}
 							if opt.DindSupport != "" && opt.DindSupport != DindSupportNone {
 								v = append(v, map[string]interface{}{
@@ -348,7 +417,12 @@ func NewAgentSandbox(opt AgentSandboxOptions) (*unstructured.Unstructured, *core
 							"accessModes": []interface{}{"ReadWriteOnce"},
 							"resources": map[string]interface{}{
 								"requests": map[string]interface{}{
-									"storage": "10Gi",
+									"storage": func() string {
+										if opt.WorkspaceDiskSize != "" {
+											return opt.WorkspaceDiskSize
+										}
+										return "10Gi"
+									}(),
 								},
 							},
 						},

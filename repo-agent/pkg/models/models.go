@@ -63,6 +63,23 @@ type Condition struct {
 	LastTransitionTime string `json:"lastTransitionTime,omitempty"`
 }
 
+// ModelUsage captures usage statistics for a single LLM model.
+type ModelUsage struct {
+	TotalRequests  int64 `json:"totalRequests,omitempty"`
+	TotalErrors    int64 `json:"totalErrors,omitempty"`
+	TotalLatencyMs int64 `json:"totalLatencyMs,omitempty"`
+	InputTokens    int64 `json:"inputTokens,omitempty"`
+	OutputTokens   int64 `json:"outputTokens,omitempty"`
+	TotalTokens    int64 `json:"totalTokens,omitempty"`
+	CachedTokens   int64 `json:"cachedTokens,omitempty"`
+	ThoughtTokens  int64 `json:"thoughtTokens,omitempty"`
+}
+
+// Stats captures aggregated LLM statistics for a task.
+type Stats struct {
+	Models map[string]ModelUsage `json:"models,omitempty"`
+}
+
 // Task represents a sandbox task
 type Task struct {
 	Name              string `json:"name"`
@@ -75,6 +92,7 @@ type Task struct {
 	UserDraft         string `json:"userDraft,omitempty"`
 	AgentState        string `json:"agentState,omitempty"`
 	AgentStateMessage string `json:"agentStateMessage,omitempty"`
+	Stats             *Stats `json:"stats,omitempty"`
 }
 
 // PR represents a pull request
@@ -91,6 +109,7 @@ type PR struct {
 	AgentState        string   `json:"agentState,omitempty"`
 	AgentStateMessage string   `json:"agentStateMessage,omitempty"`
 	ReviewState       string   `json:"reviewState,omitempty"`
+	SandboxStatus     string   `json:"sandboxStatus,omitempty"`
 	Labels            []string `json:"labels,omitempty"`
 	Tasks             []Task   `json:"tasks,omitempty"`
 }
@@ -134,6 +153,7 @@ type Repo struct {
 type ReviewConfig struct {
 	MaxActiveSandboxes int64    `json:"maxActiveSandboxes"`
 	Assignees          []string `json:"assignees,omitempty"`
+	Models             []string `json:"models,omitempty"`
 }
 
 // IssueConfig holds configuration for issues
@@ -165,6 +185,7 @@ type DevSandbox struct {
 	Branch            string   `json:"branch,omitempty"`
 	AgentState        string   `json:"agentState,omitempty"`
 	AgentStateMessage string   `json:"agentStateMessage,omitempty"`
+	SandboxStatus     string   `json:"sandboxStatus,omitempty"`
 	Labels            []string `json:"labels,omitempty"`
 	IdeaID            string   `json:"ideaID,omitempty"`
 	Approach          string   `json:"approach,omitempty"`

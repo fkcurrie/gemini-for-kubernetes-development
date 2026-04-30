@@ -68,6 +68,7 @@ func (s *Server) RegisterRoutes(router *gin.Engine) {
 		api.GET("/repo/:repo/prs/:id/tasks", s.getPRTasks)
 		api.GET("/repo/:repo/prs/:id/tasks/:taskID/logs", s.getTaskLogs)
 		api.GET("/repo/:repo/prs/:id/details", s.getPRDetails)
+		api.GET("/repo/:repo/prs/:id/commits", s.getPRCommits)
 		api.POST("/repo/:repo/prs/:id/tasks", s.createPRTask)
 		api.POST("/repo/:repo/tasks/:taskID/draft", s.saveTaskDraft)
 		api.POST("/repo/:repo/prs/:id/draft", s.saveDraft)
@@ -77,6 +78,8 @@ func (s *Server) RegisterRoutes(router *gin.Engine) {
 		api.GET("/repo/:repo/issues/:issue_id/tasks", s.getIssueTasks)
 		api.GET("/repo/:repo/issues/:issue_id/tasks/:taskID/logs", s.getIssueTaskLogs)
 		api.GET("/repo/:repo/issues/:issue_id/details", s.getIssueDetails)
+		api.GET("/repo/:repo/issues/:issue_id/commits", s.getIssueCommits)
+		api.POST("/repo/:repo/issues/:issue_id/rollback", s.rollbackIssue)
 		api.POST("/repo/:repo/issues/:issue_id/tasks", s.createIssueTask)
 		api.POST("/repo/:repo/issues/:issue_id/draft", s.saveIssueDraft)
 		api.POST("/repo/:repo/issues/:issue_id/submitcomment", s.submitIssueComment)
@@ -93,8 +96,24 @@ func (s *Server) RegisterRoutes(router *gin.Engine) {
 		api.GET("/repo/:repo/dev/:name/tasks", s.getDevTasks)
 		api.POST("/repo/:repo/dev/:name/tasks", s.createDevTask)
 		api.GET("/repo/:repo/dev/:name/tasks/:taskID/logs", s.getDevTaskLogs)
+		api.GET("/repo/:repo/chores/:name/tasks/:taskID/logs", s.getChoreTaskLogs)
 		api.POST("/feedback", s.submitFeedback)
 		api.GET("/proxy", s.proxy)
+
+		// Overseer routes (admin only)
+		overseer := api.Group("/overseers")
+		overseer.Use(s.Auth.AdminMiddleware())
+		{
+			overseer.GET("", s.getOverseers)
+			overseer.GET("/:name", s.getOverseer)
+			overseer.GET("/:name/chores", s.getOverseerChores)
+			overseer.GET("/:name/sandboxes", s.getOverseerSandboxes)
+			overseer.GET("/:name/logs", s.getOverseerLogs)
+			overseer.GET("/:name/chores/:choreName/logs", s.getChoreLogs)
+			overseer.GET("/:name/chores/:choreName/tasks", s.getChoreTasks)
+			overseer.POST("/:name/chores/:choreName/pause", s.pauseChore)
+			overseer.POST("/:name/chores/:choreName/resume", s.resumeChore)
+		}
 	}
 
 	// Protected terminal routes (WebSocket)

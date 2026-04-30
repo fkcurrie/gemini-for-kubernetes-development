@@ -1,12 +1,12 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/gke-labs/gemini-for-kubernetes-development/agentsandboxes/pkg/threads"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/clients"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
 	v1 "k8s.io/api/core/v1"
@@ -38,12 +38,18 @@ func NewIssueSandbox(ctx context.Context, local bool, repo *github.Repository, i
 
 	if local {
 		log.Info("Using local executor for sandbox")
-		name := fmt.Sprintf("local-%s", repo.Name())
-		if issue != nil {
-			name = fmt.Sprintf("%s/issue/%d", name, issue.Number())
-		} else {
-			name = fmt.Sprintf("%s/branch/%s", name, branch)
+		name := "local"
+		if repo != nil {
+			name = fmt.Sprintf("local-%s", repo.Name())
+			if issue != nil {
+				name = fmt.Sprintf("%s/issue/%d", name, issue.Number())
+			} else {
+				name = fmt.Sprintf("%s/branch/%s", name, branch)
+			}
+		} else if branch != "" {
+			name = fmt.Sprintf("local/branch/%s", branch)
 		}
+
 		return &IssueSandbox{
 			repo:  repo,
 			issue: issue,
@@ -58,7 +64,11 @@ func NewIssueSandbox(ctx context.Context, local bool, repo *github.Repository, i
 	if issue != nil {
 		issueStr = issue.String()
 	}
-	log.Info("Looking for existing sandbox", "repo", repo.CloneURL(), "issue", issueStr, "branch", branch)
+	repoURL := "nil"
+	if repo != nil {
+		repoURL = repo.CloneURL()
+	}
+	log.Info("Looking for existing sandbox", "repo", repoURL, "issue", issueStr, "branch", branch)
 
 	sb, found, err := FindSandbox(ctx, kube, repo, issue, branch)
 	if err != nil {
@@ -162,7 +172,7 @@ func LaunchSandbox(ctx context.Context, kube *clients.KubernetesClient, repo *gi
 
 	sandbox.Spec.PodTemplate.ObjectMeta.Labels = map[string]string{
 		// This enables FindSandboxPod to work, even if we are launching the dev sandbox directly
-		"sandbox": "devc-" + sandboxName,
+		"sandbox": sandboxName,
 	}
 
 	sandbox.Annotations = map[string]string{
@@ -211,14 +221,21 @@ func LaunchSandbox(ctx context.Context, kube *clients.KubernetesClient, repo *gi
 
 func NameForSandbox(repo *github.Repository, issue *github.Issue, branch string) string {
 	var sandboxName string
-	if issue != nil {
+	if issue != nil && repo != nil {
 		sandboxName = fmt.Sprintf("github-%s-%s-%d", repo.Owner(), repo.Name(), issue.Number())
-	} else {
+	} else if repo != nil {
 		// Fallback for dev sandboxes without issue
 		// Sanitize branch name
 		safeBranch := strings.ReplaceAll(branch, "/", "-")
 		safeBranch = strings.ReplaceAll(safeBranch, "_", "-")
 		sandboxName = fmt.Sprintf("github-%s-%s-%s", repo.Owner(), repo.Name(), safeBranch)
+	} else {
+		// Chore or other generic sandboxes
+		if branch != "" {
+			sandboxName = fmt.Sprintf("generic-%s", strings.ReplaceAll(branch, "/", "-"))
+		} else {
+			sandboxName = "generic-sandbox"
+		}
 	}
 	sandboxName = strings.ToLower(sandboxName) // Repos can have capital letters, but k8s names must be lowercase
 
@@ -267,9 +284,8 @@ func FindSandboxPodInNamespace(ctx context.Context, sandboxName, namespace strin
 		namespace = kube.CurrentNamespace
 	}
 
-	// The sandbox name in the RGD is devc-<name>
-	// And the pods have label sandbox=devc-<name>
-	labelSelector := fmt.Sprintf("sandbox=devc-%s", sandboxName)
+	// And the pods have label sandbox=<name>
+	labelSelector := fmt.Sprintf("sandbox=%s", sandboxName)
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
@@ -302,72 +318,36 @@ func (s *IssueSandbox) ReadFile(path string) ([]byte, error) {
 	return s.executor.ReadFile(path)
 }
 
-func (s *IssueSandbox) ListThreads() ([]ThreadInfo, error) {
-	return ListThreads(s.executor)
+func (s *IssueSandbox) ListThreads(ctx context.Context) ([]ThreadInfo, error) {
+	return threads.ListThreads(ctx, executorWrapper{s.executor})
 }
 
-func ListThreads(executor Executor) ([]ThreadInfo, error) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	opts := ExecOptions{
-		Command: []string{RepoSandboxBinary, "threads", "agent"},
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-	}
-
-	if err := executor.Exec(opts); err != nil {
-		return nil, fmt.Errorf("failed to list threads via agent: %w, stderr: %s", err, stderr.String())
-	}
-
-	var threads []ThreadInfo
-	if err := json.Unmarshal(stdout.Bytes(), &threads); err != nil {
-		return nil, fmt.Errorf("failed to parse threads agent output: %w", err)
-	}
-	return threads, nil
+func ListThreads(ctx context.Context, executor Executor) ([]ThreadInfo, error) {
+	return threads.ListThreads(ctx, executorWrapper{executor})
 }
 
-func (s *IssueSandbox) GetThreadMessages(threadID string) ([]ThreadMessage, error) {
-	return GetThreadMessages(s.executor, threadID)
+func (s *IssueSandbox) GetThreadMessages(ctx context.Context, threadID string) ([]ThreadMessage, error) {
+	return threads.GetThreadMessages(ctx, executorWrapper{s.executor}, threadID)
 }
 
-func GetThread(executor Executor, threadID string, includeMessages bool) (*ThreadInfo, error) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	args := []string{RepoSandboxBinary, "threads", "agent", fmt.Sprintf("--thread-id=%s", threadID)}
-	if includeMessages {
-		args = append(args, "--include-messages=true")
-	}
-
-	opts := ExecOptions{
-		Command: args,
-		Stdout:  &stdout,
-		Stderr:  &stderr,
-	}
-
-	if err := executor.Exec(opts); err != nil {
-		return nil, fmt.Errorf("failed to get thread via agent: %w, stderr: %s", err, stderr.String())
-	}
-
-	var threads []ThreadInfo
-	if err := json.Unmarshal(stdout.Bytes(), &threads); err != nil {
-		return nil, fmt.Errorf("failed to parse threads agent output: %w", err)
-	}
-
-	if len(threads) == 0 {
-		return nil, fmt.Errorf("thread with ID %q not found", threadID)
-	}
-
-	return &threads[0], nil
+func GetThread(ctx context.Context, executor Executor, threadID string, includeMessages bool) (*ThreadInfo, error) {
+	return threads.GetThread(ctx, executorWrapper{executor}, threadID, includeMessages)
 }
 
-func GetThreadMessages(executor Executor, threadID string) ([]ThreadMessage, error) {
-	thread, err := GetThread(executor, threadID, true)
-	if err != nil {
-		return nil, err
-	}
-	return thread.Messages, nil
+func GetThreadMessages(ctx context.Context, executor Executor, threadID string) ([]ThreadMessage, error) {
+	return threads.GetThreadMessages(ctx, executorWrapper{executor}, threadID)
+}
+
+type executorWrapper struct {
+	inner Executor
+}
+
+func (w executorWrapper) Exec(_ context.Context, opts threads.ExecOptions) error {
+	return w.inner.Exec(ExecOptions{
+		Command: opts.Command,
+		Stdout:  opts.Stdout,
+		Stderr:  opts.Stderr,
+	})
 }
 
 func (s *IssueSandbox) ConfigureGemini(ctx context.Context) error {

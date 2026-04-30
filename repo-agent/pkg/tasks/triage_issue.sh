@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+set -o pipefail
 
 # It expects the following environment variables to be set:
 # - GEMINI_API_KEY
@@ -32,12 +33,12 @@ function runGemini {
 {{ else }}
     echo "running gemini in yolo mode"
     export GEMINI_API_KEY="${GEMINI_API_KEY}"
-    
+
     MODELS=( {{ range .Models }}"{{ . }}" {{ end }} )
     SUCCESS=false
     for MODEL in "${MODELS[@]}"; do
         echo "Trying model: $MODEL"
-        if gemini --yolo --model "$MODEL" < ${PROMPT_FILE} > "$(dirname "${PROMPT_FILE}")/raw-agent-output.txt" 2>&1; then
+        if gemini --yolo --model "$MODEL" --output-format stream-json < ${PROMPT_FILE} | /opt/repo-agent/gemini-stream-processor --output "$(dirname "${PROMPT_FILE}")/gemini-output.json"; then
              echo "Gemini execution successful with model: $MODEL"
              SUCCESS=true
              break
@@ -51,11 +52,16 @@ function runGemini {
         exit 1
     fi
 {{ end }}
-    cat "$(dirname "${PROMPT_FILE}")/raw-agent-output.txt"
-    # remove agent thoughts (extract prow command)
-    grep "^/kind " "$(dirname "${PROMPT_FILE}")/raw-agent-output.txt" > "$(dirname "${PROMPT_FILE}")/agent-output.txt" || true
+}
+
+function installExtensions {
+    echo "Installing extensions..."
+    {{- range .Extensions }}
+    gemini extensions install "{{ .Source }}" {{ if .Ref }}--ref "{{ .Ref }}"{{ end }} --consent
+    {{- end }}
 }
 
 # Main execution
 configureGemini
+installExtensions
 runGemini

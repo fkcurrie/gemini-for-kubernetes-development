@@ -2,11 +2,13 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/sandbox"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/tasks"
@@ -19,6 +21,7 @@ type IterateCommand struct {
 	// Configurable options
 	RepoURL         string
 	BranchName      string
+	PRID            string
 	AgentPrompt     string
 	GithubUserLogin string
 	GithubUserEmail string
@@ -28,6 +31,7 @@ type IterateCommand struct {
 	WorkspaceDir    string
 	TaskDir         string
 	Model           string
+	ExtensionsJSON  string
 
 	// loaded objects
 	repo      *github.Repository
@@ -55,16 +59,24 @@ func BuildIterateCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&iterCommand.RepoURL, "repo-url", os.Getenv("GIT_HTML_URL"), "GitHub repo URL")
 	cmd.Flags().StringVar(&iterCommand.BranchName, "branch-name", os.Getenv("BRANCH_NAME"), "Branch name")
+	cmd.Flags().StringVar(&iterCommand.PRID, "pr-id", "", "PR ID")
 	cmd.Flags().StringVar(&iterCommand.AgentPrompt, "agent-prompt", os.Getenv("AGENT_PROMPT"), "Agent prompt")
 	cmd.Flags().StringVar(&iterCommand.GithubUserLogin, "github-user-login", os.Getenv("GITHUB_USER_LOGIN"), "Github user login")
 	cmd.Flags().StringVar(&iterCommand.GithubUserEmail, "github-user-email", os.Getenv("GITHUB_USER_EMAIL"), "Github user email")
 	cmd.Flags().StringVar(&iterCommand.GithubUserName, "github-user-name", os.Getenv("GITHUB_USER_NAME"), "Github user name")
 	cmd.Flags().StringVar(&iterCommand.Model, "model", os.Getenv("MODEL"), "Model to use")
+	cmd.Flags().StringVar(&iterCommand.ExtensionsJSON, "extensions", os.Getenv("AGENT_LLM_EXTENSIONS"), "Extensions JSON")
 	cmd.Flags().BoolVar(&iterCommand.InPod, "in-pod", false, "Whether running inside the pod")
 	return cmd
 }
 
 func (c *IterateCommand) InitDefaults() {
+	if c.PRID == "" {
+		c.PRID = os.Getenv("PRID")
+	}
+	if c.PRID == "" {
+		c.PRID = os.Getenv("PULL_REQUEST_ID")
+	}
 	if c.WorkspaceDir == "" {
 		c.WorkspaceDir = "/workspaces"
 	}
@@ -76,7 +88,7 @@ func (c *IterateCommand) InitDefaults() {
 	}
 
 	if c.Model == "" {
-		c.Model = "gemini-3-pro-preview"
+		c.Model = "gemini-3.1-pro-preview"
 	}
 }
 
@@ -146,8 +158,19 @@ func (c *IterateCommand) Run(ctx context.Context) error {
 		Repo:        c.repo,
 		User:        c.user,
 		AgentPrompt: c.AgentPrompt,
+		BranchName:  c.BranchName,
+		PRID:        c.PRID,
 		PromptFile:  promptPath,
 		Models:      strings.Split(c.Model, ","),
+	}
+
+	if c.ExtensionsJSON != "" {
+		var extensions []reviewv1alpha1.Extension
+		if err := json.Unmarshal([]byte(c.ExtensionsJSON), &extensions); err != nil {
+			log.Error(err, "failed to unmarshal extensions JSON")
+		} else {
+			task.Extensions = extensions
+		}
 	}
 
 	apikey, err := GetGeminiAPIKey(c.sandboxID)

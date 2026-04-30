@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bluekeyes/go-gitdiff/gitdiff"
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/agentoutput"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/clients"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/imagebuilder"
@@ -51,6 +53,7 @@ type ReviewCommand struct {
 	ExpectedComments  int
 	IgnoreFiles       []string
 	SeverityThreshold string
+	Extensions        []reviewv1alpha1.Extension
 
 	// output
 	TaskDir         string
@@ -152,6 +155,17 @@ func (c *ReviewCommand) InitDefaults() {
 	}
 	if c.SeverityThreshold == "" {
 		c.SeverityThreshold = os.Getenv("SEVERITY_THRESHOLD")
+	}
+	if len(c.Extensions) == 0 {
+		extensionsJSON := os.Getenv("AGENT_LLM_EXTENSIONS")
+		if extensionsJSON != "" {
+			var extensions []reviewv1alpha1.Extension
+			if err := json.Unmarshal([]byte(extensionsJSON), &extensions); err != nil {
+				klog.Infof("Warning: failed to unmarshal AGENT_LLM_EXTENSIONS: %v", err)
+			} else {
+				c.Extensions = extensions
+			}
+		}
 	}
 }
 
@@ -300,6 +314,7 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 		WorkspacesDir:        c.WorkspaceDir,
 		TokensDir:            c.TokensDir,
 		RepoDir:              repoDir,
+		Extensions:           c.Extensions,
 	})
 	if err != nil {
 		updateState("error", err.Error())
@@ -359,6 +374,7 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 	maxRuns := 3
 	maxSuccessfulRuns := 2
 	successfulRuns := 0
+	var accumulatedUsage *llm.Stats
 
 	for i := 0; i < maxRuns; i++ {
 		log.Info("Running Agent", "agent", c.AgentName, "attempt", i+1, "maxRuns", maxRuns, "successfulRuns", successfulRuns)
@@ -406,7 +422,8 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 		}
 
 		// RUN THE AGENT
-		output, err := provider.Run(currentPrompt)
+		output, usage, err := provider.Run(currentPrompt)
+		accumulatedUsage = mergeStats(accumulatedUsage, usage)
 		if err != nil {
 			var quotaErr *llm.QuotaError
 			if errors.As(err, &quotaErr) {
@@ -450,6 +467,19 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 			// Restore/Merge labels
 			accumulatedAgentOutput.Labels = append(accumulatedAgentOutput.Labels, existingLabels...)
 			accumulatedAgentOutput.Labels = uniqueStrings(accumulatedAgentOutput.Labels)
+
+			// Filter comments by severity threshold on the first run too
+			if c.SeverityThreshold != "" && accumulatedAgentOutput.Review != nil {
+				var filtered []*models.DraftReviewComment
+				for _, comment := range accumulatedAgentOutput.Review.Comments {
+					if getSeverityLevel(comment.Severity) >= getSeverityLevel(c.SeverityThreshold) {
+						filtered = append(filtered, comment)
+					} else if comment.Path != nil {
+						log.Info("Filtering out comment below severity threshold", "file", *comment.Path, "severity", comment.Severity, "threshold", c.SeverityThreshold)
+					}
+				}
+				accumulatedAgentOutput.Review.Comments = filtered
+			}
 		} else {
 			for _, newComment := range agentOutput.Review.Comments {
 				if newComment == nil || newComment.Path == nil || newComment.Line == nil || newComment.Body == nil {
@@ -506,7 +536,8 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 	// If more than one successful run, accumalatedAgentOutput has duplicated text in Note and Review.Body, so dedupe and combine them.
 	if successfulRuns > 1 {
 		log.Info("Deduplicating and combining agent output text from multiple runs.")
-		combinedNote, err := dedupeAndCombineText(provider, accumulatedAgentOutput.Note)
+		combinedNote, noteUsage, err := dedupeAndCombineText(provider, accumulatedAgentOutput.Note)
+		accumulatedUsage = mergeStats(accumulatedUsage, noteUsage)
 		if err != nil {
 			log.Info("Failed to dedupe and combine Note. Using original Note.", "error", err)
 			combinedNote = accumulatedAgentOutput.Note
@@ -515,7 +546,8 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 		}
 		accumulatedAgentOutput.Note = combinedNote
 
-		combinedBody, err := dedupeAndCombineText(provider, *accumulatedAgentOutput.Review.Body)
+		combinedBody, bodyUsage, err := dedupeAndCombineText(provider, *accumulatedAgentOutput.Review.Body)
+		accumulatedUsage = mergeStats(accumulatedUsage, bodyUsage)
 		if err != nil {
 			log.Info("Failed to dedupe and combine Body. Using original Body.", "error", err)
 		} else {
@@ -547,16 +579,53 @@ func (c *ReviewCommand) Run(ctx context.Context) error {
 	}
 	log.Info("Wrote agent output", "filename", filename)
 
+	// Write stats for task runner to pick up.
+	if accumulatedUsage != nil {
+		usageJSON, err := json.Marshal(accumulatedUsage)
+		if err != nil {
+			log.Error(err, "Failed to marshal stats")
+		} else {
+			if err := os.WriteFile(c.taskPath("llm-usage.json"), usageJSON, 0644); err != nil {
+				log.Error(err, "Failed to write llm-usage.json")
+			}
+		}
+	}
+
 	updateState("review ready", "")
 	return nil
+}
+
+// mergeStats merges two llm.Stats values, summing all counters per model.
+func mergeStats(accumulated, newUsage *llm.Stats) *llm.Stats {
+	if newUsage == nil {
+		return accumulated
+	}
+	if accumulated == nil {
+		accumulated = &llm.Stats{
+			Models: make(map[string]llm.ModelUsage),
+		}
+	}
+	for model, newData := range newUsage.Models {
+		existing := accumulated.Models[model]
+		existing.API.TotalRequests += newData.API.TotalRequests
+		existing.API.TotalErrors += newData.API.TotalErrors
+		existing.API.TotalLatencyMs += newData.API.TotalLatencyMs
+		existing.Tokens.Input += newData.Tokens.Input
+		existing.Tokens.Output += newData.Tokens.Output
+		existing.Tokens.Total += newData.Tokens.Total
+		existing.Tokens.Cached += newData.Tokens.Cached
+		existing.Tokens.Thoughts += newData.Tokens.Thoughts
+		accumulated.Models[model] = existing
+	}
+	return accumulated
 }
 
 func uniqueStrings(input []string) []string {
 	return sets.NewString(input...).List()
 }
 
-func getExistingComments(ctx context.Context, client *github.Client, owner, repo string, prNumber int) ([]*github.PullRequestComment, error) {
-	var allComments []*github.PullRequestComment
+func getExistingComments(ctx context.Context, client *github.Client, owner, repo string, prNumber int) ([]*MinimalComment, error) {
+	var allComments []*MinimalComment
 	opts := &github.PullRequestListCommentsOptions{
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
@@ -565,7 +634,15 @@ func getExistingComments(ctx context.Context, client *github.Client, owner, repo
 		if err != nil {
 			return nil, err
 		}
-		allComments = append(allComments, comments...)
+		for _, c := range comments {
+			allComments = append(allComments, &MinimalComment{
+				Path:      c.Path,
+				Body:      c.Body,
+				Line:      c.Line,
+				Side:      c.Side,
+				StartLine: c.StartLine,
+			})
+		}
 		if resp.NextPage == 0 {
 			break
 		}
@@ -574,10 +651,21 @@ func getExistingComments(ctx context.Context, client *github.Client, owner, repo
 	return allComments, nil
 }
 
+type MinimalComment struct {
+	Path      *string `yaml:"path,omitempty"`
+	Body      *string `yaml:"body,omitempty"`
+	Line      *int    `yaml:"line,omitempty"`
+	Side      *string `yaml:"side,omitempty"`
+	StartLine *int    `yaml:"start_line,omitempty"`
+}
+
 // TODO improve duplicate detection to fuzzy matching
-func isDuplicateCommentExact(newComment *models.DraftReviewComment, existingComments []*github.PullRequestComment, accumulatedComments []*models.DraftReviewComment) bool {
+func isDuplicateCommentExact(newComment *models.DraftReviewComment, existingComments []*MinimalComment, accumulatedComments []*models.DraftReviewComment) bool {
 	for _, existingComment := range existingComments {
 		if existingComment == nil {
+			continue
+		}
+		if existingComment.Path == nil || existingComment.Line == nil || existingComment.Body == nil {
 			continue
 		}
 		if *newComment.Path == *existingComment.Path &&
@@ -587,6 +675,12 @@ func isDuplicateCommentExact(newComment *models.DraftReviewComment, existingComm
 		}
 	}
 	for _, existingComment := range accumulatedComments {
+		if existingComment == nil {
+			continue
+		}
+		if existingComment.Path == nil || existingComment.Line == nil || existingComment.Body == nil {
+			continue
+		}
 		if *newComment.Path == *existingComment.Path &&
 			*newComment.Line == *existingComment.Line &&
 			*newComment.Body == *existingComment.Body {
@@ -632,10 +726,14 @@ func isCommentValid(comment *models.DraftReviewComment, diffFiles []*gitdiff.Fil
 	if comment.Path == nil || comment.Line == nil {
 		return false // Invalid comment if path or line is missing
 	}
+	side := "RIGHT"
+	if comment.Side != nil {
+		side = *comment.Side
+	}
 	for _, file := range diffFiles {
 		if file.NewName == *comment.Path {
 			for _, fragment := range file.TextFragments {
-				if *comment.Side == "RIGHT" {
+				if side == "RIGHT" {
 					if fragment.NewPosition <= int64(*comment.Line) && int64(*comment.Line) <= fragment.NewPosition+fragment.NewLines {
 						return true
 					}
@@ -715,20 +813,20 @@ func parseDiffFromURL(url string) ([]*gitdiff.File, error) {
 	return files, nil
 }
 
-func dedupeAndCombineText(provider llm.Provider, text string) (string, error) {
+func dedupeAndCombineText(provider llm.Provider, text string) (string, *llm.Stats, error) {
 	// We get text with sections separated by '---'
 	prompt := fmt.Sprintf("The following text contains multiple sections separated by '---'. Please deduplicate and combine them into a single coherent section of text. Return only the result.\n\n%s", text)
 
-	output, err := provider.Run(prompt)
+	output, usage, err := provider.Run(prompt)
 	if err != nil {
 		var quotaErr *llm.QuotaError
 		if errors.As(err, &quotaErr) {
-			return "", quotaErr
+			return "", usage, quotaErr
 		}
-		return "", err
+		return "", usage, err
 	}
 
-	return string(output), nil
+	return string(output), usage, nil
 }
 
 func shouldIgnoreFile(path string, ignorePatterns []string) bool {
@@ -779,6 +877,8 @@ func filterDiffFiles(repoDir string, diffFiles []*gitdiff.File, ignoreFiles []st
 
 func getSeverityLevel(severity string) int {
 	switch strings.ToLower(severity) {
+	case "critical":
+		return 4
 	case "high":
 		return 3
 	case "medium":

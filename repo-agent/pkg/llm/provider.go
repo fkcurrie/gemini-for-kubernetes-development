@@ -17,6 +17,8 @@ package llm
 import (
 	"bytes"
 	"fmt"
+
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 )
 
 const (
@@ -34,6 +36,7 @@ type ProviderConfig struct {
 	RepoDir              string
 	TokensDir            string
 	OutputStartIndicator string
+	Extensions           []reviewv1alpha1.Extension
 }
 
 // Provider defines the interface for interacting with an LLM.
@@ -41,11 +44,38 @@ type Provider interface {
 	Setup() error
 	Cleanup() error
 	ExpandPrompt(prompt string) (string, error)
-	Run(prompt string) ([]byte, error)
+	Run(prompt string) ([]byte, *Stats, error)
 	// AddPostProcessor adds a post-processing function to the provider.
 	// These functions are applied sequentially to the LLM's raw output.
 	AddPostProcessor(p PostProcessor)
 	QuotaCheck() bool
+}
+
+// Stats captures usage statistics from an LLM invocation.
+type Stats struct {
+	Models map[string]ModelUsage `json:"models,omitempty"`
+}
+
+// ModelUsage captures per-model usage statistics.
+type ModelUsage struct {
+	API    APIUsage   `json:"api"`
+	Tokens TokenUsage `json:"tokens"`
+}
+
+// APIUsage captures API call statistics for a model.
+type APIUsage struct {
+	TotalRequests  int64 `json:"totalRequests"`
+	TotalErrors    int64 `json:"totalErrors"`
+	TotalLatencyMs int64 `json:"totalLatencyMs"`
+}
+
+// TokenUsage captures token consumption for a model.
+type TokenUsage struct {
+	Input    int64 `json:"input"`
+	Output   int64 `json:"output"`
+	Total    int64 `json:"total"`
+	Cached   int64 `json:"cached"`
+	Thoughts int64 `json:"thoughts"`
 }
 
 // QuotaError is returned by Run() when the LLM API returns an "Out of Quota" error.
@@ -76,6 +106,13 @@ func NewLLMProvider(cfg ProviderConfig) (Provider, error) {
 		return g, nil
 	case "claude":
 		c := &Claude{
+			ProviderConfig: cfg,
+		}
+		c.AddPostProcessor(StripYAMLMarkers)
+		return c, nil
+	case "claude-cli":
+		c := &ClaudeCLI{
+			Executor:       &RealCommandExecutor{},
 			ProviderConfig: cfg,
 		}
 		c.AddPostProcessor(StripYAMLMarkers)

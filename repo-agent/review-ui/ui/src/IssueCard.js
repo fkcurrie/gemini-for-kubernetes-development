@@ -24,6 +24,8 @@ function IssueCard({
   const [tasks, setTasks] = useState([]);
   const [iteratePrompt, setIteratePrompt] = useState('');
   const [showTerminal, setShowTerminal] = useState(false);
+  const [showRollbackUI, setShowRollbackUI] = useState(false);
+  const [commits, setCommits] = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
 
   const fetchTasks = () => {
@@ -36,6 +38,62 @@ function IssueCard({
             }
         })
         .catch(err => console.error("Failed to fetch tasks:", err));
+  };
+
+  const fetchCommits = () => {
+    if (!repoName || !issue.id) return;
+    fetch(`/api/repo/${repoName}/issues/${issue.id}/commits`)
+        .then(res => res.json())
+        .then(data => {
+            if (Array.isArray(data)) {
+                setCommits(data);
+            }
+        })
+        .catch(err => console.error("Failed to fetch commits:", err));
+  };
+
+  const getPRId = () => {
+    let prId = "";
+    const fixTask = tasks.find(t => t.type === 'fix-issue');
+    if (fixTask && fixTask.agentDraft) {
+        const match = fixTask.agentDraft.match(/\/pull\/(\d+)/);
+        if (match) {
+            prId = match[1];
+        }
+    }
+    if (!prId && iteratePrompt) {
+        const match = iteratePrompt.match(/\/pull\/(\d+)/);
+        if (match) {
+            prId = match[1];
+        }
+    }
+    return prId;
+  };
+
+  const handleRollback = (sha) => {
+    if (!repoName || !issue.id) return;
+    const prId = getPRId();
+    if (!prId) {
+        alert("No PR ID found. Please ensure a 'fix-issue' task has completed with a PR link, or paste the PR link into the iteration textbox.");
+        return;
+    }
+    if (!window.confirm(`Are you sure you want to rollback to commit ${sha.substring(0, 7)}? This will perform a force push.`)) return;
+
+    fetch(`/api/repo/${repoName}/issues/${issue.id}/rollback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ commitSha: sha, pullRequestId: prId })
+    })
+    .then(res => {
+        if (res.ok) {
+            alert("Rollback task created!");
+            setShowRollbackUI(false);
+            fetchTasks();
+        } else {
+            res.text().then(t => alert("Failed to rollback: " + t));
+        }
+    })
+    .catch(err => console.error("Failed to rollback", err));
   };
 
   const handleCreateTask = (taskType, prompt = '', params = {}) => {
@@ -163,8 +221,10 @@ function IssueCard({
             </div>
           ) : getSandboxStatusClass(issue) === 'red' ? (
             <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
-              <span className={`pr-sandbox ${getSandboxStatusClass(issue)}`}>{issue.sandboxStatus || 'Error'}</span>
-              <button className="btn btn-sm pr-sandbox green" style={{padding: '4px 10px', fontSize: '14px'}} onClick={(e) => { e.stopPropagation(); handleScaleUp(issue.id, true); }} title="Restart">
+              <span className={`pr-sandbox ${getSandboxStatusClass(issue)}`} title={issue.sandboxStatus || 'Error'}>
+                {issue.sandboxStatus?.startsWith('Evicted') ? 'Evicted' : (issue.sandboxStatus || 'Error')}
+              </span>
+              <button className="btn btn-sm pr-sandbox green" style={{padding: '4px 10px', fontSize: '14px'}} onClick={(e) => { e.stopPropagation(); handleScaleUp(issue.id, true); }} title="Restart/Reprovision Sandbox">
                   &#8635;
                </button>
             </div>
@@ -230,37 +290,77 @@ function IssueCard({
                             </div>
                         )}
                         <button className="btn" onClick={() => handleCreateTask('triage-issue', '', selectedModel ? { model: selectedModel } : {})}>Triage</button>
+                        {!showRollbackUI && (
+                            <button className="btn" style={{backgroundColor: 'var(--status-grey)'}} onClick={() => { setShowRollbackUI(true); fetchCommits(); }}>Rollback to previous commit</button>
+                        )}
                         <button className="btn" onClick={() => {
-                            const fixTask = tasks.find(t => t.type === 'fix-issue');
-                            if (!fixTask || !fixTask.agentDraft) {
-                                alert("No 'fix-issue' task with a draft found to extract PR ID.");
+                            const prId = getPRId();
+
+                            if (!prId) {
+                                alert("No PR ID found. Please ensure a 'fix-issue' task has completed with a PR link, or paste the PR link into the iteration textbox.");
                                 return;
                             }
-                            const match = fixTask.agentDraft.match(/\/pull\/(\d+)/);
-                            if (!match) {
-                                alert("Could not extract PR ID from fix-issue draft.");
-                                return;
-                            }
-                            const params = { PULL_REQUEST_ID: match[1] };
+                            const params = { PULL_REQUEST_ID: prId };
                             if (selectedModel) params.model = selectedModel;
                             handleCreateTask('address-feedback', '', params);
                         }}>Address Feedback</button>
                         <button className="btn" onClick={() => {
-                            const fixTask = tasks.find(t => t.type === 'fix-issue');
-                            if (!fixTask || !fixTask.agentDraft) {
-                                alert("No 'fix-issue' task with a draft found to extract PR ID.");
+                            const prId = getPRId();
+
+                            if (!prId) {
+                                alert("No PR ID found. Please ensure a 'fix-issue' task has completed with a PR link, or paste the PR link into the iteration textbox.");
                                 return;
                             }
-                            const match = fixTask.agentDraft.match(/\/pull\/(\d+)/);
-                            if (!match) {
-                                alert("Could not extract PR ID from fix-issue draft.");
-                                return;
-                            }
-                            const params = { PULL_REQUEST_ID: match[1] };
+                            const params = { PULL_REQUEST_ID: prId };
                             if (selectedModel) params.model = selectedModel;
                             handleCreateTask('investigate-failures', '', params);
                         }}>Investigate Failures</button>
                     </div>
+                    {showRollbackUI && (
+                        <div className="new-task-form" style={{padding: '10px', backgroundColor: 'var(--bg-secondary)', borderRadius: '5px'}}>
+                            <h4>Rollback to Previous Commit</h4>
+                            <p style={{fontSize: 'small', color: 'var(--text-secondary)', marginBottom: '10px'}}>
+                                Select a commit to rollback the issue branch to. This will perform a <strong>force push</strong>.
+                            </p>
+                            <div style={{maxHeight: '300px', overflowY: 'auto', border: '1px solid var(--border-color)', borderRadius: '4px', backgroundColor: 'var(--bg-primary)'}}>
+                                {commits.length === 0 ? (
+                                    <div style={{padding: '10px', textAlign: 'center'}}>Loading commits...</div>
+                                ) : (
+                                    commits.map((commit) => (
+                                        <div 
+                                            key={commit.sha} 
+                                            style={{
+                                                padding: '10px', 
+                                                borderBottom: '1px solid var(--border-color)', 
+                                                display: 'flex', 
+                                                justifyContent: 'space-between', 
+                                                alignItems: 'center',
+                                                cursor: 'pointer'
+                                            }}
+                                            onClick={() => handleRollback(commit.sha)}
+                                            onMouseOver={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-hover)'}
+                                            onMouseOut={(e) => e.currentTarget.style.backgroundColor = ''}
+                                        >
+                                            <div style={{overflow: 'hidden'}}>
+                                                <div style={{fontWeight: 'bold', fontSize: 'small', textOverflow: 'ellipsis', whiteSpace: 'nowrap', overflow: 'hidden'}} title={commit.message}>
+                                                    {commit.message}
+                                                </div>
+                                                <div style={{fontSize: 'x-small', color: 'var(--text-secondary)'}}>
+                                                    {commit.author} on {new Date(commit.date).toLocaleString()}
+                                                </div>
+                                            </div>
+                                            <div style={{fontFamily: 'monospace', fontSize: 'x-small', backgroundColor: 'var(--bg-secondary)', padding: '2px 4px', borderRadius: '3px', marginLeft: '10px'}}>
+                                                {commit.sha.substring(0, 7)}
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                            <div style={{marginTop: '10px'}}>
+                                <button className="btn" style={{backgroundColor: 'var(--status-grey)'}} onClick={() => setShowRollbackUI(false)}>Cancel</button>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </div>

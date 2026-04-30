@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
 )
 
@@ -16,6 +17,7 @@ type TriageIssueModel struct {
 	PromptFile    string
 	Models        []string
 	AgentName     string
+	Extensions    []reviewv1alpha1.Extension
 }
 
 func (m *TriageIssueModel) Name() string {
@@ -47,7 +49,15 @@ func (m *TriageIssueModel) Prompt() ([]byte, error) {
 }
 
 func (m *TriageIssueModel) PostScript() ([]byte, error) {
-	return nil, nil
+	tmpl, err := getScriptTemplate("triage_issue_post.sh")
+	if err != nil {
+		return nil, err
+	}
+	var w bytes.Buffer
+	if err := tmpl.Execute(&w, m); err != nil {
+		return nil, fmt.Errorf("failed to execute post-script template: %w", err)
+	}
+	return w.Bytes(), nil
 }
 
 func (m *TriageIssueModel) DraftState() string {

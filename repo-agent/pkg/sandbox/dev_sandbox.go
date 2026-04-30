@@ -24,6 +24,11 @@ type DevSandboxOptions struct {
 	UserName    string
 	UserEmail   string
 
+	// Bot info
+	BotLogin string
+	BotName  string
+	BotEmail string
+
 	// User Config
 	DotFilesRepo string
 
@@ -31,6 +36,7 @@ type DevSandboxOptions struct {
 	LLMProvider         string
 	LLMConfigdirRef     string
 	LLMAPIKeySecretName string
+	LLMAPIKey           string
 	Prompt              string
 
 	// Infra
@@ -38,6 +44,7 @@ type DevSandboxOptions struct {
 	GithubSecretName      string
 	DevcontainerConfigRef string
 	Image                 string
+	OverseerName          string
 
 	// System Images
 	RepoSandboxImage string
@@ -50,6 +57,9 @@ type DevSandboxOptions struct {
 	Replicas int64
 
 	DindSupport string
+
+	// WorkspaceDiskSize specifies the disk size for the workspace PVC.
+	WorkspaceDiskSize string
 
 	// Idea Exploration
 	IdeaID         string

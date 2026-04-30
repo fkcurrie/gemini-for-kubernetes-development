@@ -3,6 +3,8 @@ go 1.25.7
 use (
 	.
 	./agentsandboxes
-	./repo-agent
 	./dev/tools
+	./overseer
+	./repo-agent
+	./services/container-registry
 )
