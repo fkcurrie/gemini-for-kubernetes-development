@@ -535,7 +535,6 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 
 	var issueTitle string
 	if isDryRun {
-		issueTitle = "issue-title-placeholder"
 		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for issue %d in Overseer %s", taskType, number, overseerName)
 		return nil
 	}
