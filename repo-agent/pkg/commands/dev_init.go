@@ -2,11 +2,13 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/sandbox"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/tasks"
@@ -30,6 +32,7 @@ type DevInitCommand struct {
 	WorkspaceDir    string
 	TaskDir         string
 	Model           string
+	ExtensionsJSON  string
 
 	// loaded objects
 	repo      *github.Repository
@@ -63,6 +66,7 @@ func BuildDevInitCommand() *cobra.Command {
 	cmd.Flags().StringVar(&initCommand.GithubUserEmail, "github-user-email", os.Getenv("GITHUB_USER_EMAIL"), "Github user email")
 	cmd.Flags().StringVar(&initCommand.GithubUserName, "github-user-name", os.Getenv("GITHUB_USER_NAME"), "Github user name")
 	cmd.Flags().StringVar(&initCommand.Model, "model", os.Getenv("MODEL"), "Model to use")
+	cmd.Flags().StringVar(&initCommand.ExtensionsJSON, "extensions", os.Getenv("AGENT_LLM_EXTENSIONS"), "Extensions JSON")
 	cmd.Flags().BoolVar(&initCommand.InPod, "in-pod", false, "Whether running inside the pod")
 	return cmd
 }
@@ -79,7 +83,7 @@ func (c *DevInitCommand) InitDefaults() {
 	}
 
 	if c.Model == "" {
-		c.Model = "gemini-3-pro-preview"
+		c.Model = "gemini-3.1-pro-preview"
 	}
 }
 
@@ -99,14 +103,16 @@ func (c *DevInitCommand) loadGithubObjects(ctx context.Context) error {
 
 	// Let's parse the name from URL for directory naming
 	// e.g. https://github.com/owner/repo
-	base := filepath.Base(c.RepoURL)
-	if ext := filepath.Ext(base); ext != "" {
+	cleanURL := strings.Split(c.RepoURL, "#")[0]
+	cleanURL = strings.TrimSuffix(cleanURL, "/")
+	base := filepath.Base(cleanURL)
+	if ext := filepath.Ext(base); ext == ".git" {
 		base = base[:len(base)-len(ext)]
 	}
 
 	// Construct basic repo object
 	innerRepo := &githubv39.Repository{
-		CloneURL: githubv39.String(c.RepoURL + ".git"),
+		CloneURL: githubv39.String(strings.TrimSuffix(cleanURL, ".git") + ".git"),
 		Name:     githubv39.String(base),
 	}
 	c.repo = github.NewRepository(innerRepo)
@@ -157,6 +163,15 @@ func (c *DevInitCommand) Run(ctx context.Context) error {
 		AgentPrompt:  c.AgentPrompt,
 		PromptFile:   promptPath,
 		Models:       strings.Split(c.Model, ","),
+	}
+
+	if c.ExtensionsJSON != "" {
+		var extensions []reviewv1alpha1.Extension
+		if err := json.Unmarshal([]byte(c.ExtensionsJSON), &extensions); err != nil {
+			log.Error(err, "failed to unmarshal extensions JSON")
+		} else {
+			task.Extensions = extensions
+		}
 	}
 
 	apikey, err := GetGeminiAPIKey(c.sandboxID)

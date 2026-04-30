@@ -116,6 +116,7 @@ func (s *Server) listDevSandboxesFromK8s(ctx context.Context, namespace, repo st
 
 			agentState := ""
 			agentStateMessage := ""
+			sandboxStatus := ""
 			var labels []string
 
 			if val, ok := annotations["agentState"]; ok {
@@ -123,6 +124,9 @@ func (s *Server) listDevSandboxesFromK8s(ctx context.Context, namespace, repo st
 			}
 			if val, ok := annotations["agentStateMessage"]; ok {
 				agentStateMessage = val
+			}
+			if val, ok := annotations["sandbox.gemini.google.com/pod-status"]; ok {
+				sandboxStatus = val
 			}
 			if val, ok := annotations["agentLabels"]; ok {
 				_ = json.Unmarshal([]byte(val), &labels)
@@ -145,7 +149,7 @@ func (s *Server) listDevSandboxesFromK8s(ctx context.Context, namespace, repo st
 				}
 			}
 
-			name := strings.TrimPrefix(item.GetName(), "devc-")
+			name := item.GetName()
 
 			sandbox := models.DevSandbox{
 				Name:              name,
@@ -155,6 +159,7 @@ func (s *Server) listDevSandboxesFromK8s(ctx context.Context, namespace, repo st
 				SandboxReplica:    fmt.Sprintf("%d", replicas),
 				AgentState:        agentState,
 				AgentStateMessage: agentStateMessage,
+				SandboxStatus:     sandboxStatus,
 				Labels:            labels,
 				IdeaID:            ideaID,
 				Approach:          approach,
@@ -282,16 +287,17 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "RepoURL not found in RepoWatch"})
 		return
 	}
+	repoURL = strings.TrimSuffix(repoURL, ".git") + ".git"
 
 	repoParts := strings.Split(strings.TrimSuffix(repoURL, ".git"), "/")
 	repoName := repoParts[len(repoParts)-1]
 
-	forkCloneURL := fmt.Sprintf("https://github.com/%s/%s.git", namespace, repoName)
+	cloneURL := repoURL
 	if req.BaseBranch != "" {
-		forkCloneURL = fmt.Sprintf("%s#refs/heads/%s", forkCloneURL, req.BaseBranch)
+		cloneURL = fmt.Sprintf("%s#refs/heads/%s", repoURL, req.BaseBranch)
 	}
 
-	forkHTMLURL := fmt.Sprintf("https://github.com/%s/%s", namespace, repoName)
+	htmlURL := strings.TrimSuffix(repoURL, ".git")
 	originURL := fmt.Sprintf("github.com/%s/%s.git", namespace, repoName)
 
 	githubSecretName, _, _ := unstructured.NestedString(rw.Object, "spec", "githubSecretName")
@@ -300,6 +306,8 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 	llmProvider, _, _ := unstructured.NestedString(rw.Object, "spec", "dev", "llm", "provider")
 	image, _, _ := unstructured.NestedString(rw.Object, "spec", "dev", "image")
 	devContainerConfigRef, _, _ := unstructured.NestedString(rw.Object, "spec", "dev", "devcontainerConfigRef")
+	dindSupport, _, _ := unstructured.NestedString(rw.Object, "spec", "dev", "dindSupport")
+	workspaceDiskSize, _, _ := unstructured.NestedString(rw.Object, "spec", "dev", "workspaceDiskSize")
 
 	// Fetch user info from secret
 	var userName, userEmail string
@@ -314,6 +322,9 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 	} else {
 		log.Info("Failed to get github secret for user", "user", namespace, "err", err)
 	}
+	if userName == "" {
+		userName = namespace
+	}
 
 	// Sanitize branch name for K8s resource name to match controller logic
 	// We replace special characters and hash the result to ensure the K8s resource name
@@ -327,7 +338,7 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 	h := fnv.New32a()
 	h.Write([]byte(fullSuffix))
 	hashedSuffix := fmt.Sprintf("%08x", h.Sum32())
-	sandboxName := fmt.Sprintf("%s-dev", hashedSuffix)
+	sandboxName := fmt.Sprintf("dev-%s", hashedSuffix)
 
 	// Check if branch is in excludeBranches and remove it if so
 	excludeBranches, found, err := unstructured.NestedStringSlice(rw.Object, "spec", "dev", "excludeBranches")
@@ -370,10 +381,12 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 		Namespace: namespace,
 		Labels: map[string]string{
 			"review.gemini.google.com/repowatch": repo,
+			"sandbox.gemini.google.com/type":     "dev",
+			"sandbox-type":                       "dev",
 		},
 		Annotations: annotations,
-		CloneURL:    forkCloneURL,
-		HTMLURL:     forkHTMLURL,
+		CloneURL:    cloneURL,
+		HTMLURL:     htmlURL,
 
 		Branch:      branchName,
 		Origin:      originURL,
@@ -387,17 +400,20 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 		LLMAPIKeySecretName: apiKeySecretRef,
 		Prompt:              req.Prompt,
 
-		GithubSecretName: githubSecretName,
-
+		GithubSecretName:      githubSecretName,
 		DevcontainerConfigRef: devContainerConfigRef,
 		Image:                 image,
 
 		HTTPEnabled: true,
 		Replicas:    1,
 
-		IdeaID:         req.IdeaID,
-		Approach:       req.Approach,
-		ParentApproach: req.ParentApproach,
+		ServiceAccountName: "issue-sandbox",
+
+		DindSupport:       dindSupport,
+		WorkspaceDiskSize: workspaceDiskSize,
+		IdeaID:            req.IdeaID,
+		Approach:          req.Approach,
+		ParentApproach:    req.ParentApproach,
 	}
 
 	sb, svc := sandbox.NewDevSandbox(opts)
@@ -427,7 +443,7 @@ func (s *Server) createDevSandbox(c *gin.Context) {
 
 	// Create initial dev-setup task
 	taskParams := map[string]string{
-		"REPO_URL":          forkHTMLURL,
+		"REPO_URL":          repoURL,
 		"BRANCH_NAME":       branchName,
 		"GITHUB_USER_LOGIN": namespace,
 		"GITHUB_USER_EMAIL": userEmail,
@@ -453,7 +469,7 @@ func (s *Server) deleteDevSandbox(c *gin.Context) {
 	name := c.Param("name") // This is the sandbox name
 	ctx := c.Request.Context()
 
-	resourceName := "devc-" + name
+	resourceName := name
 	if err := s.K8sManager.ScaledownDevSandboxHelper(ctx, namespace, resourceName); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete dev sandbox", "details": err.Error()})
 		return
@@ -467,7 +483,7 @@ func (s *Server) scaleUpDevSandbox(c *gin.Context) {
 	namespace := s.Auth.GetNamespaceFromContext(c)
 	name := c.Param("name")
 
-	resourceName := "devc-" + name
+	resourceName := name
 	if err := s.K8sManager.ScaleupDevSandboxHelper(c.Request.Context(), namespace, resourceName); err != nil {
 		log.Info("Failed to scale up dev sandbox", "name", name, "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scale up dev sandbox"})
@@ -482,13 +498,13 @@ func (s *Server) scaleDownDevSandbox(c *gin.Context) {
 	namespace := s.Auth.GetNamespaceFromContext(c)
 	name := c.Param("name")
 
-	resourceName := "devc-" + name
+	resourceName := name
 	if err := s.K8sManager.ScaledownDevSandboxHelper(c.Request.Context(), namespace, resourceName); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to scale down dev sandbox", "details": err.Error()})
 		return
 	}
 
-	if err := s.K8sManager.UpdateDevSandboxAnnotation(c.Request.Context(), namespace, resourceName, "agentState", "sandbox paused"); err != nil {
+	if err := s.K8sManager.UpdateSandboxAnnotation(c.Request.Context(), namespace, resourceName, "agentState", "sandbox paused"); err != nil {
 		log.Info("Failed to update dev sandbox annotation", "err", err)
 	}
 
@@ -498,7 +514,7 @@ func (s *Server) getDevTasks(c *gin.Context) {
 	namespace := s.Auth.GetNamespaceFromContext(c)
 	sandboxName := c.Param("name")
 
-	resourceName := "devc-" + sandboxName
+	resourceName := sandboxName
 	taskList, err := s.K8sManager.ListSandboxTasks(c.Request.Context(), namespace, resourceName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list tasks", "details": err.Error()})
@@ -534,6 +550,7 @@ func (s *Server) getDevTasks(c *gin.Context) {
 			UserDraft:         tUserDraft,
 			AgentState:        tAgentState,
 			AgentStateMessage: tAgentStateMessage,
+			Stats:             convertStats(taskItem.Status.Stats),
 		})
 	}
 	// Sort tasks by creation timestamp (newest first)
@@ -571,7 +588,7 @@ func (s *Server) createDevTask(c *gin.Context) {
 		params[k] = v
 	}
 
-	resourceName := "devc-" + sandboxName
+	resourceName := sandboxName
 	err := s.K8sManager.CreateSandboxTask(c.Request.Context(), namespace, resourceName, "Sandbox", taskType, params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task", "details": err.Error()})
@@ -593,8 +610,7 @@ func (s *Server) getDevTaskLogs(c *gin.Context) {
 	sandboxName := c.Param("name")
 	taskID := c.Param("taskID")
 
-	// Service name logic must match KRO's RGD: devc-${schema.metadata.name}-lb
-	serviceName := fmt.Sprintf("devc-%s-lb", sandboxName)
+	serviceName := fmt.Sprintf("%s-lb", sandboxName)
 
 	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:13339", serviceName, namespace)
 

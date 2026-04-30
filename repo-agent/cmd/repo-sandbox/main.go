@@ -52,6 +52,7 @@ func run(ctx context.Context) error {
 	rootCommand.AddCommand(commands.BuildGithubInvestigateCommand())
 	rootCommand.AddCommand(commands.BuildGithubAutopollCommand())
 	rootCommand.AddCommand(commands.BuildIterateCommand())
+	rootCommand.AddCommand(commands.BuildChoreCommand())
 
 	rootCommand.AddCommand(commands.BuildThreadsCommand())
 
@@ -61,6 +62,7 @@ func run(ctx context.Context) error {
 	rootCommand.AddCommand(reviewDaemon)
 
 	rootCommand.AddCommand(commands.BuildReviewCommand())
+	rootCommand.AddCommand(commands.BuildRollbackCommand())
 
 	// Common commands
 	rootCommand.AddCommand(commands.BuildSSHDCommand())

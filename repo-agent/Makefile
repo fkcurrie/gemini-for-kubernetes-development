@@ -3,9 +3,9 @@ KIND_CLUSTER ?= repo-agent
 REGISTRY ?= kind.local/
 NAMESPACE ?= default
 LOCAL_PORT ?= 13380
-CLUSTER_NAME != kubectl config view --minify --output 'jsonpath={.clusters[0].name}'
-INSTALL_ENVOY = $(if $(filter kind%,$(CLUSTER_NAME)),yes,no)
-GW_CLASS = $(if $(filter kind%,$(CLUSTER_NAME)),repo-agent-gatewayclass,gke-l7-regional-external-managed)
+CLUSTER_NAME ?= $(shell kubectl config view --minify --output 'jsonpath={.clusters[0].name}')
+INSTALL_ENVOY ?= $(if $(filter kind%,$(CLUSTER_NAME)),yes,no)
+GW_CLASS ?= $(if $(filter kind%,$(CLUSTER_NAME)),repo-agent-gatewayclass,gke-l7-regional-external-managed)
 LLM_PROVIDER ?= gemini-cli
 DEFAULT_LLM_PROVIDER = $(if $(filter kind%,$(CLUSTER_NAME)),$(LLM_PROVIDER),gemini-cli)
 
@@ -30,6 +30,8 @@ check-prereqs:
 	@command -v kind >/dev/null 2>&1 || { echo >&2 "kind not found. Please install it. https://kind.sigs.k8s.io/docs/user/quick-start/#installation"; exit 1; }
 	@command -v kubectl >/dev/null 2>&1 || { echo >&2 "kubectl not found. Please install it. https://kubernetes.io/docs/tasks/tools/install-kubectl/"; exit 1; }
 	@command -v helm >/dev/null 2>&1 || { echo >&2 "helm not found. Please install it. https://helm.sh/docs/intro/install/"; exit 1; }
+	@command -v node >/dev/null 2>&1 || { echo >&2 "node not found. Please install it. https://nodejs.org/"; exit 1; }
+	@command -v npm >/dev/null 2>&1 || { echo >&2 "npm not found. Please install it. https://docs.npmjs.com/downloading-and-installing-node-js-and-npm"; exit 1; }
 	@echo "All prerequisites are installed."
 
 .PHONY: generate
@@ -81,6 +83,8 @@ create-kind:
 .PHONY: build-and-push-repo-agent
 build-and-push-repo-agent:
 	../dev/tools/push-images --image-prefix=$(REGISTRY) $(KIND_CLUSTER_ARG) \
+	--working-dir .. \
+	--images-dir images \
 	--skip generic-golang \
 	--skip dind-golang \
 	--skip github-mcp-server
@@ -95,6 +99,10 @@ install-repo-agent:
 	--replace .spec.versions[].schema.openAPIV3Schema.properties.spec.properties.dev.properties.llm.properties.provider.default=${DEFAULT_LLM_PROVIDER} \
 	--replace .spec.versions[].schema.openAPIV3Schema.properties.spec.properties.review.properties.llm.properties.provider.default=${DEFAULT_LLM_PROVIDER} \
 	--replace .spec.versions[].schema.openAPIV3Schema.properties.spec.properties.issueHandlers.items.properties.llm.properties.provider.default=${DEFAULT_LLM_PROVIDER}
+
+.PHONY: install-overseer
+install-overseer:
+	(cd ../overseer && KIND_CLUSTER=${KIND_CLUSTER} $(MAKE) push-images-overseer install)
 
 bin/tls.crt:
 	openssl req -x509 -nodes -days 365 -newkey rsa:2048  -keyout bin/tls.key -out bin/tls.crt  -subj "/CN=repo-agent"
@@ -187,25 +195,31 @@ apply-examples: apply-common-for-examples
 	kubectl apply -f examples/k8s-configdir.yaml -n $(NAMESPACE)
 	kubectl apply -f examples/k8s-repowatch.yaml -n $(NAMESPACE)
 	sleep 5
-	kubectl get reviewsandboxes -A
-	kubectl get issuesandboxes -A
+	kubectl get sandboxes -A
 
 .PHONY: delete-instance
 delete-instance:
-	kubectl delete reviewsandbox demo
+	kubectl delete sandbox demo
 
 .PHONY: port-forward
 port-forward:
 	while true; do \
 	ENVOY_SERVICE=$$(kubectl get svc -n envoy-gateway-system --selector=gateway.envoyproxy.io/owning-gateway-namespace=repo-agent-system,gateway.envoyproxy.io/owning-gateway-name=repo-agent-gateway -o jsonpath='{.items[0].metadata.name}') && kubectl port-forward -n envoy-gateway-system --address 0.0.0.0 service/$${ENVOY_SERVICE} $(LOCAL_PORT):80;\
 	done
-	# kubectl port-forward -n repo-agent-system --address 0.0.0.0 service/devc-agent-sandbox-pr-102-lb  13338:13338
+	# kubectl port-forward -n repo-agent-system --address 0.0.0.0 service/agent-sandbox-pr-102-lb  13338:13338
+
+IMAGE_TAG ?= latest
+SKIP_PREQS ?= false
 
 # non-ephemeral (GKE) cluster install targets
 .PHONY: install-repo-agent-latest
-install-repo-agent-latest: install-dep-packages create-secrets
+install-repo-agent-latest:
+	@if [ "$(SKIP_PREQS)" != "true" ]; then \
+		$(MAKE) install-dep-packages create-secrets; \
+	fi
+	@mkdir -p bin
 	../dev/tools/deploy-to-kube --image-prefix=ghcr.io/gke-labs/gemini-for-kubernetes-development/ \
-	--image-tag=latest \
+	--image-tag=$(IMAGE_TAG) \
 	--replace .spec.installationName=${CLUSTER_NAME} \
 	--replace .spec.gatewayClassName=${GW_CLASS} \
 	--working-dir . --output-file=bin/repo-agent-manifest.yaml
@@ -213,15 +227,11 @@ install-repo-agent-latest: install-dep-packages create-secrets
 
 .PHONY: uninstall-repo-agent-latest
 uninstall-repo-agent-latest:
-	../dev/tools/deploy-to-kube --image-prefix=ghcr.io/gke-labs/gemini-for-kubernetes-development/ --image-tag=latest --working-dir . --output-file=bin/repo-agent-manifest.yaml
+	../dev/tools/deploy-to-kube --image-prefix=ghcr.io/gke-labs/gemini-for-kubernetes-development/ --image-tag=$(IMAGE_TAG) --working-dir . --output-file=bin/repo-agent-manifest.yaml
 	kubectl delete -f bin/repo-agent-manifest.yaml || true
 	${MAKE} uninstall-dep-packages
-	kubectl delete crd issuesandboxes.custom.agents.x-k8s.io --wait=false || true
-	kubectl patch crd issuesandboxes.custom.agents.x-k8s.io --type=json -p='[{"op":"remove", "path":"/metadata/finalizers", "value":["customresourcecleanup.apiextensions.k8s.io"]}]' || true
-	kubectl delete crd reviewsandboxes.custom.agents.x-k8s.io --wait=false || true
-	kubectl patch crd reviewsandboxes.custom.agents.x-k8s.io --type=json -p='[{"op":"remove", "path":"/metadata/finalizers", "value":["customresourcecleanup.apiextensions.k8s.io"]}]' || true
-	kubectl delete crd devsandboxes.custom.agents.x-k8s.io --wait=false || true
-	kubectl patch crd devsandboxes.custom.agents.x-k8s.io --type=json -p='[{"op":"remove", "path":"/metadata/finalizers", "value":["customresourcecleanup.apiextensions.k8s.io"]}]' || true
+	kubectl delete crd sandboxes.agents.x-k8s.io --wait=false || true
+	kubectl patch crd sandboxes.agents.x-k8s.io --type=json -p='[{"op":"remove", "path":"/metadata/finalizers", "value":["customresourcecleanup.apiextensions.k8s.io"]}]' || true
 
 .PHONY: reinstall-repo-agent-latest
 reinstall-repo-agent-latest: uninstall-repo-agent-latest install-repo-agent-latest
@@ -233,8 +243,25 @@ update-repo-agent-latest: install-repo-agent-latest
 	kubectl rollout status  statefulset  -n repo-agent-system
 	kubectl rollout restart deployment -n repo-agent-system
 	kubectl rollout status  deployment  -n repo-agent-system
+
+.PHONY: show-url
+show-url:
 	@IP_ADDR=`kubectl get gateway -n repo-agent-system repo-agent-gateway -o json | jq -r ".status.addresses[0].value"`; \
 	echo; echo; echo -e "\e[1;34m REPO AGENT: https://$$IP_ADDR \e[0m"; echo; echo;
+
+
+.PHONY: reload-ui
+reload-ui:
+	../dev/tools/push-images --image-prefix=$(REGISTRY) $(KIND_CLUSTER_ARG) --working-dir .. --images-dir images \
+	--only review-api \
+	--only review-ui
+	$(MAKE) install-repo-agent
+	kubectl rollout restart statefulset -n repo-agent-system
+	kubectl rollout status  statefulset  -n repo-agent-system
+	kubectl rollout restart deployment -n repo-agent-system
+	kubectl rollout status  deployment  -n repo-agent-system
+	sleep 5
+	make port-forward
 
 .PHONY: reload
 reload: build-and-push-repo-agent install-repo-agent

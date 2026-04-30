@@ -83,6 +83,7 @@ func (s *Server) getPRTasks(c *gin.Context) {
 			UserDraft:         tUserDraft,
 			AgentState:        tAgentState,
 			AgentStateMessage: tAgentStateMessage,
+			Stats:             convertStats(taskItem.Status.Stats),
 		})
 	}
 	// Sort tasks by creation timestamp (newest first)
@@ -141,6 +142,7 @@ func (s *Server) listPRsFromK8s(ctx context.Context, namespace, repo string) ([]
 		agentState := ""
 		agentStateMessage := ""
 		reviewState := ""
+		sandboxStatus := ""
 		var labels []string
 
 		if val, ok := annotations["userDraft"]; ok {
@@ -158,6 +160,9 @@ func (s *Server) listPRsFromK8s(ctx context.Context, namespace, repo string) ([]
 		if val, ok := annotations["reviewState"]; ok {
 			reviewState = val
 		}
+		if val, ok := annotations["sandbox.gemini.google.com/pod-status"]; ok {
+			sandboxStatus = val
+		}
 		if val, ok := annotations["agentLabels"]; ok {
 			_ = json.Unmarshal([]byte(val), &labels)
 		}
@@ -174,6 +179,7 @@ func (s *Server) listPRsFromK8s(ctx context.Context, namespace, repo string) ([]
 			AgentState:        agentState,
 			AgentStateMessage: agentStateMessage,
 			ReviewState:       reviewState,
+			SandboxStatus:     sandboxStatus,
 			Labels:            labels,
 		}
 		prs = append(prs, pr)
@@ -194,7 +200,7 @@ func (s *Server) saveDraft(c *gin.Context) {
 	}
 
 	sandboxName := fmt.Sprintf("%s-pr-%s", repo, prID)
-	err := s.K8sManager.UpdateReviewSandboxUserDraft(c.Request.Context(), namespace, sandboxName, payload.Draft)
+	err := s.K8sManager.UpdateSandboxUserDraft(c.Request.Context(), namespace, sandboxName, payload.Draft)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save draft", "details": err.Error()})
 		return
@@ -272,8 +278,8 @@ func (s *Server) submitReview(c *gin.Context) {
 
 	if draft != agentDraft {
 		if sandboxName != "" {
-			if err := s.K8sManager.UpdateReviewSandboxUserDraft(ctx, namespace, sandboxName, draft); err != nil {
-				log.Info("Failed to update reviewsandbox userDraft for PR", "prID", prID, "repo", repo, "err", err)
+			if err := s.K8sManager.UpdateSandboxUserDraft(ctx, namespace, sandboxName, draft); err != nil {
+				log.Info("Failed to update sandbox userDraft for PR", "prID", prID, "repo", repo, "err", err)
 			}
 		}
 	}
@@ -335,8 +341,8 @@ func (s *Server) submitReview(c *gin.Context) {
 	}
 	log.Info("review created", "review", review)
 
-	if err := s.K8sManager.UpdateReviewSandboxAnnotation(ctx, namespace, sandboxName, "reviewState", "submitted"); err != nil {
-		log.Info("Failed to update reviewsandbox reviewState", "prID", prID, "repo", repo, "err", err)
+	if err := s.K8sManager.UpdateSandboxAnnotation(ctx, namespace, sandboxName, "reviewState", "submitted"); err != nil {
+		log.Info("Failed to update sandbox reviewState", "prID", prID, "repo", repo, "err", err)
 	}
 
 	// scale down sandbox
@@ -408,6 +414,7 @@ func (s *Server) createPRTask(c *gin.Context) {
 	var payload struct {
 		Prompt           string `json:"prompt"`
 		ExpectedComments int    `json:"expectedComments"`
+		Model            string `json:"model"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -449,6 +456,16 @@ func (s *Server) createPRTask(c *gin.Context) {
 
 	if payload.ExpectedComments > 0 {
 		params["EXPECTED_COMMENTS"] = strconv.Itoa(payload.ExpectedComments)
+	}
+
+	if payload.Model != "" {
+		params["model"] = payload.Model
+	} else {
+		// Inject Models from RepoWatch if not already specified
+		models, found, err := unstructured.NestedStringSlice(rw.Object, "spec", "review", "models")
+		if err == nil && found && len(models) > 0 {
+			params["model"] = strings.Join(models, ",")
+		}
 	}
 
 	err = s.K8sManager.CreateSandboxTask(c.Request.Context(), namespace, sandboxName, "Sandbox", "review", params)
@@ -528,8 +545,7 @@ func (s *Server) getTaskLogs(c *gin.Context) {
 	taskID := c.Param("taskID")
 
 	sandboxName := fmt.Sprintf("%s-pr-%s", repo, prID)
-	// Service name logic must match KRO's RGD: devc-${schema.metadata.name}-lb
-	serviceName := fmt.Sprintf("devc-%s-lb", sandboxName)
+	serviceName := fmt.Sprintf("%s-lb", sandboxName)
 
 	targetURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:13339", serviceName, namespace)
 
@@ -557,4 +573,78 @@ func (s *Server) getTaskLogs(c *gin.Context) {
 	}
 
 	proxy.ServeHTTP(c.Writer, c.Request)
+}
+
+func (s *Server) getPRCommits(c *gin.Context) {
+	log := klog.FromContext(c.Request.Context())
+	namespace := s.Auth.GetNamespaceFromContext(c)
+	repo := c.Param("repo")
+	prIDStr := c.Param("id")
+
+	prID, err := strconv.Atoi(prIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid PR ID"})
+		return
+	}
+
+	repoWatch, err := s.K8sManager.GetRepoWatch(c.Request.Context(), namespace, repo)
+	if err != nil {
+		log.Info("Failed to get RepoWatch", "namespace", namespace, "name", repo, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get RepoWatch"})
+		return
+	}
+
+	token, err := s.K8sManager.GetGitHubToken(c.Request.Context(), repoWatch)
+	if err != nil {
+		log.Info("Failed to get github token", "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get GitHub token"})
+		return
+	}
+
+	client := clients.NewGitHubClient(c.Request.Context(), token)
+
+	repoURL, found, _ := unstructured.NestedString(repoWatch.Object, "spec", "repoURL")
+	if !found {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "RepoURL not found"})
+		return
+	}
+	owner, repoName, err := parseRepoURL(repoURL)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid RepoURL"})
+		return
+	}
+
+	commits, _, err := client.PullRequests.ListCommits(c.Request.Context(), owner, repoName, prID, nil)
+	if err != nil {
+		log.Info("Failed to list PR commits", "prID", prID, "err", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list PR commits"})
+		return
+	}
+
+	var result []gin.H
+	for _, commit := range commits {
+		sha := commit.GetSHA()
+		message := ""
+		if commit.Commit != nil {
+			message = commit.Commit.GetMessage()
+		}
+		authorName := ""
+		authorDate := time.Time{}
+		if commit.Commit != nil && commit.Commit.Author != nil {
+			authorName = commit.Commit.Author.GetName()
+			authorDate = commit.Commit.Author.GetDate()
+		}
+		if authorName == "" && commit.Author != nil {
+			authorName = commit.Author.GetLogin()
+		}
+
+		result = append(result, gin.H{
+			"sha":     sha,
+			"message": message,
+			"author":  authorName,
+			"date":    authorDate,
+		})
+	}
+
+	c.JSON(http.StatusOK, result)
 }

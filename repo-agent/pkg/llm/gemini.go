@@ -92,6 +92,21 @@ func (g *Gemini) Setup() error {
 		return fmt.Errorf("failed to read %s: %v", geminiTokenFile, err)
 	}
 	os.Setenv("GEMINI_API_KEY", string(geminiKey))
+
+	// Install extensions
+	for _, ext := range g.Extensions {
+		klog.Infof("Installing gemini extension: %s (ref: %s)", ext.Source, ext.Ref)
+		args := []string{"extensions", "install", ext.Source, "--consent"}
+		if ext.Ref != "" {
+			args = append(args, "--ref", ext.Ref)
+		}
+		stdout, stderr, err := g.Executor.Run("gemini", args...)
+		if err != nil {
+			return fmt.Errorf("failed to install extension %s: %v. Stderr: %s", ext.Source, err, string(stderr))
+		}
+		klog.Infof("Successfully installed extension %s. Stdout: %s", ext.Source, string(stdout))
+	}
+
 	return nil
 }
 
@@ -123,9 +138,9 @@ func ensureSettings(geminiDir string) error {
 	}
 	general["previewFeatures"] = true
 	if model, ok := settings["model"]; !ok {
-		// if model is unset, set it to gemini-3-pro-preview
+		// if model is unset, set it to gemini-3.1-pro-preview
 		settings["model"] = map[string]interface{}{
-			"name": "gemini-3-pro-preview",
+			"name": "gemini-3.1-pro-preview",
 		}
 	} else if modelStr, ok := model.(string); ok {
 		// if model is a string, convert it to an object
@@ -164,27 +179,110 @@ func (g *Gemini) ExpandPrompt(prompt string) (string, error) {
 	return expandCommands(prompt, ".gemini")
 }
 
-func (g *Gemini) Run(agentPrompt string) ([]byte, error) {
+// GeminiJSONOutput represents the JSON envelope from `gemini --output-format json`.
+type GeminiJSONOutput struct {
+	SessionID string          `json:"session_id"`
+	Response  string          `json:"response"`
+	Stats     GeminiStatsJSON `json:"stats"`
+}
+
+type GeminiAPIStatsJSON struct {
+	TotalRequests  int64 `json:"totalRequests"`
+	TotalErrors    int64 `json:"totalErrors"`
+	TotalLatencyMs int64 `json:"totalLatencyMs"`
+}
+
+type GeminiTokenStatsJSON struct {
+	Input      int64 `json:"input"`
+	Prompt     int64 `json:"prompt"`
+	Candidates int64 `json:"candidates"`
+	Total      int64 `json:"total"`
+	Cached     int64 `json:"cached"`
+	Thoughts   int64 `json:"thoughts"`
+	Tool       int64 `json:"tool"`
+}
+
+type GeminiModelStatsJSON struct {
+	API    GeminiAPIStatsJSON   `json:"api"`
+	Tokens GeminiTokenStatsJSON `json:"tokens"`
+}
+
+type GeminiStatsJSON struct {
+	Models map[string]GeminiModelStatsJSON `json:"models"`
+}
+
+func convertGeminiStats(stats GeminiStatsJSON) *Stats {
+	if len(stats.Models) == 0 {
+		return nil
+	}
+	usage := &Stats{
+		Models: make(map[string]ModelUsage, len(stats.Models)),
+	}
+	for model, data := range stats.Models {
+		usage.Models[model] = ModelUsage{
+			API: APIUsage{
+				TotalRequests:  data.API.TotalRequests,
+				TotalErrors:    data.API.TotalErrors,
+				TotalLatencyMs: data.API.TotalLatencyMs,
+			},
+			Tokens: TokenUsage{
+				Input:    data.Tokens.Input,
+				Output:   data.Tokens.Candidates,
+				Total:    data.Tokens.Total,
+				Cached:   data.Tokens.Cached,
+				Thoughts: data.Tokens.Thoughts,
+			},
+		}
+	}
+	return usage
+}
+
+// ParseGeminiOutput parses the raw JSON output from the gemini CLI
+// (when run with --output-format json) and returns the response text
+// and LLM usage stats.
+func ParseGeminiOutput(data []byte) (string, *Stats, error) {
+	var output GeminiJSONOutput
+	if err := json.Unmarshal(data, &output); err != nil {
+		return "", nil, fmt.Errorf("failed to parse gemini output: %w", err)
+	}
+	return output.Response, convertGeminiStats(output.Stats), nil
+}
+
+func (g *Gemini) Run(agentPrompt string) ([]byte, *Stats, error) {
 	klog.Info("running gemini")
 
-	stdout, stderr, err := g.Executor.Run("gemini", "-y", "-p", agentPrompt)
+	stdout, stderr, err := g.Executor.Run("gemini", "-y", "--output-format", "json", "-p", agentPrompt)
 	if err != nil {
 		klog.Infof("gemini command failed: %v. Stderr: %s", err, string(stderr))
 		if strings.Contains(string(stderr), "[API Error: You have exhausted your daily quota on this model.]") {
-			return nil, &QuotaError{Err: err}
+			return nil, nil, &QuotaError{Err: err}
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
-	output := stdout
+	// Parse the JSON envelope from gemini --output-format json
+	var envelope GeminiJSONOutput
+	// Find first '{' to skip any non-JSON prefix warnings
+	idx := bytes.IndexByte(stdout, '{')
+	if idx == -1 {
+		return nil, nil, fmt.Errorf("gemini --output-format json returned no JSON object")
+	}
+	if err := json.Unmarshal(stdout[idx:], &envelope); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse gemini JSON output: %w", err)
+	}
+
+	// Extract the response text — post-processors work on this, not the JSON envelope
+	output := []byte(envelope.Response)
 	for _, p := range g.processors {
 		output, err = p(output)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	return output, nil
+	usage := convertGeminiStats(envelope.Stats)
+
+	return output, usage, nil
 }
 
 func StripUnillStartIndicator(outputStartIndicator string) PostProcessor {

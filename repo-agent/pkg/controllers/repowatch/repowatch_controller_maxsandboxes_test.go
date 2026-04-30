@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -46,6 +47,7 @@ func TestReconcileReviewSandboxes_MaxSandboxes(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = reviewv1alpha1.AddToScheme(s)
+	_ = sandboxv1alpha1.AddToScheme(s)
 
 	repoURL := "https://github.com/test/repo"
 
@@ -71,8 +73,8 @@ func TestReconcileReviewSandboxes_MaxSandboxes(t *testing.T) {
 	// 1. Existing Active Sandbox (PR 1)
 	activeSandbox := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "custom.agents.x-k8s.io/v1alpha1",
-			"kind":       "ReviewSandbox",
+			"apiVersion": "agents.x-k8s.io/v1alpha1",
+			"kind":       "Sandbox",
 			"metadata": map[string]interface{}{
 				"name":      "test-repowatch-pr-1",
 				"namespace": "default",
@@ -94,8 +96,8 @@ func TestReconcileReviewSandboxes_MaxSandboxes(t *testing.T) {
 	// 2. Existing Inactive Sandbox (PR 2) - scaled down
 	inactiveSandbox := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "custom.agents.x-k8s.io/v1alpha1",
-			"kind":       "ReviewSandbox",
+			"apiVersion": "agents.x-k8s.io/v1alpha1",
+			"kind":       "Sandbox",
 			"metadata": map[string]interface{}{
 				"name":      "test-repowatch-pr-2",
 				"namespace": "default",
@@ -141,7 +143,7 @@ func TestReconcileReviewSandboxes_MaxSandboxes(t *testing.T) {
 	}
 
 	// Call reconcile
-	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(context.Background(), repoWatch, []*github.PullRequest{}, []*github.PullRequest{pr1, pr2, pr3}, &unstructured.UnstructuredList{Items: []unstructured.Unstructured{*activeSandbox, *inactiveSandbox}})
+	watchedPRs, pendingPRs, activeSandboxes := r.reconcileReviewSandboxesInternal(context.Background(), &github.User{Login: github.String("test-user")}, repoWatch, []*github.PullRequest{}, []*github.PullRequest{pr1, pr2, pr3}, &unstructured.UnstructuredList{Items: []unstructured.Unstructured{*activeSandbox, *inactiveSandbox}}, map[string]*corev1.Pod{})
 	repoWatch.Status.ReviewSandboxes = watchedPRs
 	repoWatch.Status.PendingPRs = pendingPRs
 	repoWatch.Status.ActiveSandboxCount = activeSandboxes
@@ -150,9 +152,9 @@ func TestReconcileReviewSandboxes_MaxSandboxes(t *testing.T) {
 	// Verify results
 	sandboxList := &unstructured.UnstructuredList{}
 	sandboxList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "custom.agents.x-k8s.io",
+		Group:   "agents.x-k8s.io",
 		Version: "v1alpha1",
-		Kind:    "ReviewSandbox",
+		Kind:    "Sandbox",
 	})
 	g.Expect(r.Client.List(context.Background(), sandboxList)).To(gomega.Succeed())
 	g.Expect(sandboxList.Items).To(gomega.HaveLen(2)) // Should still be 2
@@ -173,6 +175,7 @@ func TestReconcileIssueHandlerSandboxes_MaxSandboxes(t *testing.T) {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = reviewv1alpha1.AddToScheme(s)
+	_ = sandboxv1alpha1.AddToScheme(s)
 
 	repoURL := "https://github.com/test/repo"
 	handlerName := "testhandler"
@@ -204,8 +207,8 @@ func TestReconcileIssueHandlerSandboxes_MaxSandboxes(t *testing.T) {
 	// 1. Existing Active Sandbox (Issue 1)
 	activeSandbox := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "custom.agents.x-k8s.io/v1alpha1",
-			"kind":       "IssueSandbox",
+			"apiVersion": "agents.x-k8s.io/v1alpha1",
+			"kind":       "Sandbox",
 			"metadata": map[string]interface{}{
 				"name":      "test-repowatch-issue-1",
 				"namespace": "default",
@@ -230,8 +233,8 @@ func TestReconcileIssueHandlerSandboxes_MaxSandboxes(t *testing.T) {
 	// 2. Existing Inactive Sandbox (Issue 2)
 	inactiveSandbox := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "custom.agents.x-k8s.io/v1alpha1",
-			"kind":       "IssueSandbox",
+			"apiVersion": "agents.x-k8s.io/v1alpha1",
+			"kind":       "Sandbox",
 			"metadata": map[string]interface{}{
 				"name":      "test-repowatch-issue-2",
 				"namespace": "default",
@@ -312,9 +315,9 @@ func TestReconcileIssueHandlerSandboxes_MaxSandboxes(t *testing.T) {
 
 	sandboxList := &unstructured.UnstructuredList{}
 	sandboxList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "custom.agents.x-k8s.io",
+		Group:   "agents.x-k8s.io",
 		Version: "v1alpha1",
-		Kind:    "IssueSandbox",
+		Kind:    "Sandbox",
 	})
 	g.Expect(r.Client.List(context.Background(), sandboxList)).To(gomega.Succeed())
 	g.Expect(sandboxList.Items).To(gomega.HaveLen(2)) // MaxSandboxes = 2, so Issue 3 should not have a sandbox
@@ -325,4 +328,86 @@ func TestReconcileIssueHandlerSandboxes_MaxSandboxes(t *testing.T) {
 	// Check PendingIssues
 	g.Expect(fetchedRepoWatch.Status.PendingIssues[handlerName]).To(gomega.HaveLen(1))
 	g.Expect(fetchedRepoWatch.Status.PendingIssues[handlerName][0]).To(gomega.Equal(3))
+}
+
+// TestReconcileDevSandboxes_MaxSandboxes verifies that the MaxSandboxes limit is respected for Dev sandboxes.
+func TestReconcileDevSandboxes_MaxSandboxes(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	_ = reviewv1alpha1.AddToScheme(s)
+	_ = sandboxv1alpha1.AddToScheme(s)
+
+	repoWatch := &reviewv1alpha1.RepoWatch{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-repowatch",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: reviewv1alpha1.RepoWatchSpec{
+			Dev: reviewv1alpha1.DevSpec{
+				MaxActiveSandboxes: 1,
+				MaxSandboxes:       1,
+			},
+		},
+	}
+
+	// 1. Existing Dev Sandbox (feature-1)
+	existingSandbox := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "agents.x-k8s.io/v1alpha1",
+			"kind":       "Sandbox",
+			"metadata": map[string]interface{}{
+				"name":      "feature-1-dev",
+				"namespace": "default",
+				"labels": map[string]interface{}{
+					"sandbox.gemini.google.com/type": "dev",
+				},
+				"annotations": map[string]interface{}{
+					"sandbox.gemini.google.com/branch": "feature-1",
+				},
+				"ownerReferences": []interface{}{
+					map[string]interface{}{
+						"apiVersion":         "review.gemini.google.com/v1alpha1",
+						"kind":               "RepoWatch",
+						"name":               "test-repowatch",
+						"uid":                "test-uid",
+						"controller":         true,
+						"blockOwnerDeletion": true,
+					},
+				},
+			},
+			"spec": map[string]interface{}{
+				"replicas": int64(1),
+			},
+		},
+	}
+
+	r := &Reconciler{
+		Client: clientfake.NewClientBuilder().WithScheme(s).WithObjects(repoWatch, existingSandbox).WithStatusSubresource(repoWatch).Build(),
+		Scheme: s,
+	}
+
+	// Both feature-1 and feature-2 are candidate branches
+	branches := []*github.Branch{
+		{Name: github.String("feature-1")},
+		{Name: github.String("feature-2")},
+	}
+
+	watched, pending, err := r.reconcileDevSandboxesInternal(context.Background(), &github.User{Login: github.String("test-user")}, repoWatch, branches, "test-owner", "test-repo", nil)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	// feature-1 should be found
+	foundExisting := false
+	for _, ws := range watched {
+		if ws.SandboxName == "feature-1-dev" {
+			foundExisting = true
+		}
+	}
+	g.Expect(foundExisting).To(gomega.BeTrue())
+
+	// feature-2 should be pending
+	g.Expect(pending).To(gomega.ContainElement("feature-2"))
+	g.Expect(watched).To(gomega.HaveLen(1))
 }

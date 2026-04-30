@@ -2,11 +2,14 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	reviewv1alpha1 "github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/api/repowatch/v1alpha1"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/github"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/sandbox"
 	"github.com/gke-labs/gemini-for-kubernetes-development/repo-agent/pkg/tasks"
@@ -28,6 +31,7 @@ type GithubInvestigateCommand struct {
 	WorkspaceDir    string
 	TaskDir         string
 	Model           string
+	ExtensionsJSON  string
 
 	// loaded objects
 	repo        *github.Repository
@@ -36,6 +40,7 @@ type GithubInvestigateCommand struct {
 	sandbox     *sandbox.IssueSandbox
 	sandboxID   string
 	failedRuns  []tasks.FailedRun
+	githubAPI   *github.Client
 }
 
 // BuildGithubInvestigateCommand creates a new cobra command for using a dev sandbox to investigate github failures
@@ -69,6 +74,7 @@ func BuildGithubInvestigateCommand() *cobra.Command {
 	cmd.Flags().StringVar(&c.GithubUserEmail, "github-user-email", os.Getenv("GITHUB_USER_EMAIL"), "Github user email")
 	cmd.Flags().StringVar(&c.GithubUserName, "github-user-name", os.Getenv("GITHUB_USER_NAME"), "Github user name")
 	cmd.Flags().StringVar(&c.Model, "model", os.Getenv("MODEL"), "Model to use")
+	cmd.Flags().StringVar(&c.ExtensionsJSON, "extensions", os.Getenv("AGENT_LLM_EXTENSIONS"), "Extensions JSON")
 	cmd.Flags().BoolVar(&c.InPod, "in-pod", false, "Whether running inside the pod")
 
 	return cmd
@@ -90,7 +96,7 @@ func (c *GithubInvestigateCommand) InitDefaults() {
 	}
 
 	if c.Model == "" {
-		c.Model = "gemini-3-pro-preview"
+		c.Model = "gemini-3.1-pro-preview"
 	}
 
 	if c.PullRequestID == 0 {
@@ -115,23 +121,24 @@ func (c *GithubInvestigateCommand) loadGithubObjects(ctx context.Context) error 
 	}
 	c.GithubUserToken = token
 
-	githubAPI, err := github.NewClient(context.Background())
+	githubAPI, err := github.NewClient(ctx)
+	if err != nil {
+		return err
+	}
+	c.githubAPI = githubAPI
+
+	c.repo, err = c.githubAPI.GetRepositoryFromIssueURL(ctx, c.URL)
 	if err != nil {
 		return err
 	}
 
-	c.repo, err = githubAPI.GetRepositoryFromIssueURL(ctx, c.URL)
-	if err != nil {
-		return err
-	}
-
-	c.pullRequest, err = githubAPI.GetPullRequest(ctx, c.repo.Owner(), c.repo.Name(), c.PullRequestID)
+	c.pullRequest, err = c.githubAPI.GetPullRequest(ctx, c.repo.Owner(), c.repo.Name(), c.PullRequestID)
 	if err != nil {
 		return fmt.Errorf("failed to get github pull request: %w", err)
 	}
 
 	// Fetch failed runs
-	runs, err := githubAPI.ListWorkflowRunsByBranch(ctx, c.repo.Owner(), c.repo.Name(), c.pullRequest.HeadRef())
+	runs, err := c.githubAPI.ListWorkflowRunsByBranch(ctx, c.repo.Owner(), c.repo.Name(), c.pullRequest.HeadRef())
 	if err != nil {
 		return fmt.Errorf("failed to list workflow runs: %w", err)
 	}
@@ -228,14 +235,48 @@ func (c *GithubInvestigateCommand) Run(ctx context.Context) error {
 		// For now, let's just exit or run the task with empty list (which will result in empty prompt about failures).
 	}
 
+	comments, err := c.githubAPI.GetIssueCommentsByNumber(ctx, c.repo.Owner(), c.repo.Name(), c.pullRequest.Number())
+	if err != nil {
+		log.Error(err, "failed to get issue comments")
+	}
+
+	commits, err := c.githubAPI.GetPullRequestCommits(ctx, c.repo.Owner(), c.repo.Name(), c.pullRequest.Number())
+	if err != nil {
+		log.Error(err, "failed to get pull request commits")
+	}
+	var lastCommitAt time.Time
+	for _, commit := range commits {
+		if commit.CommittedAt().After(lastCommitAt) {
+			lastCommitAt = commit.CommittedAt()
+		}
+	}
+
+	var filteredComments []github.IssueComment
+	for _, comment := range comments {
+		if comment.CreatedAt().After(lastCommitAt) {
+			filteredComments = append(filteredComments, comment)
+		}
+	}
+
 	promptPath := c.taskPath("agent-prompt.txt")
 	task := tasks.InvestigateFailuresModel{
-		Repo:        c.repo,
-		PullRequest: c.pullRequest,
-		PromptFile:  promptPath,
-		User:        c.user,
-		Models:      strings.Split(c.Model, ","),
-		FailedRuns:  c.failedRuns,
+		Repo:              c.repo,
+		PullRequest:       c.pullRequest,
+		PromptFile:        promptPath,
+		User:              c.user,
+		Models:            strings.Split(c.Model, ","),
+		FailedRuns:        c.failedRuns,
+		IssueComments:     filteredComments,
+		RepositoryCommits: commits,
+	}
+
+	if c.ExtensionsJSON != "" {
+		var extensions []reviewv1alpha1.Extension
+		if err := json.Unmarshal([]byte(c.ExtensionsJSON), &extensions); err != nil {
+			log.Error(err, "failed to unmarshal extensions JSON")
+		} else {
+			task.Extensions = extensions
+		}
 	}
 
 	apikey, err := GetGeminiAPIKey(c.sandboxID)

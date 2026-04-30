@@ -74,6 +74,17 @@ spec:
                         type: string
                       configdirRef:
                         type: string
+                      extensions:
+                        items:
+                          properties:
+                            ref:
+                              type: string
+                            source:
+                              type: string
+                          required:
+                          - source
+                          type: object
+                        type: array
                       prompt:
                         type: string
                       provider:
@@ -81,6 +92,7 @@ spec:
                         enum:
                         - gemini-cli
                         - claude
+                        - claude-cli
                         - dummy
                         type: string
                     required:
@@ -90,6 +102,9 @@ spec:
                     type: integer
                   maxSandboxes:
                     type: integer
+                  workspaceDiskSize:
+                    default: 10Gi
+                    type: string
                 required:
                 - maxActiveSandboxes
                 - maxSandboxes
@@ -119,6 +134,10 @@ spec:
                       properties:
                         comment:
                           type: boolean
+                        excludeLabels:
+                          items:
+                            type: string
+                          type: array
                         labels:
                           items:
                             type: string
@@ -147,6 +166,17 @@ spec:
                         type: string
                       configdirRef:
                         type: string
+                      extensions:
+                        items:
+                          properties:
+                            ref:
+                              type: string
+                            source:
+                              type: string
+                          required:
+                          - source
+                          type: object
+                        type: array
                       prompt:
                         type: string
                       provider:
@@ -154,6 +184,7 @@ spec:
                         enum:
                         - gemini-cli
                         - claude
+                        - claude-cli
                         - dummy
                         type: string
                     required:
@@ -169,15 +200,11 @@ spec:
                     type: array
                   robotAccount:
                     type: string
+                  workspaceDiskSize:
+                    default: 10Gi
+                    type: string
                 required:
                 - maxActiveSandboxes
-                type: object
-              overseer:
-                properties:
-                  enabled:
-                    type: boolean
-                  image:
-                    type: string
                 type: object
               pollIntervalSeconds:
                 default: 300
@@ -195,6 +222,10 @@ spec:
                     type: array
                   devcontainerConfigRef:
                     type: string
+                  excludeLabels:
+                    items:
+                      type: string
+                    type: array
                   excludePullRequests:
                     items:
                       type: integer
@@ -217,6 +248,17 @@ spec:
                         type: string
                       configdirRef:
                         type: string
+                      extensions:
+                        items:
+                          properties:
+                            ref:
+                              type: string
+                            source:
+                              type: string
+                          required:
+                          - source
+                          type: object
+                        type: array
                       prompt:
                         type: string
                       provider:
@@ -224,6 +266,7 @@ spec:
                         enum:
                         - gemini-cli
                         - claude
+                        - claude-cli
                         - dummy
                         type: string
                     required:
@@ -243,6 +286,16 @@ spec:
                   reviewShutdownAfterMinutes:
                     type: integer
                   robotAccount:
+                    type: string
+                  severityThreshold:
+                    enum:
+                    - LOW
+                    - MEDIUM
+                    - HIGH
+                    - CRITICAL
+                    type: string
+                  workspaceDiskSize:
+                    default: 10Gi
                     type: string
                 required:
                 - maxActiveSandboxes
@@ -327,8 +380,6 @@ spec:
                     type: object
                   type: array
                 type: object
-              overseerStatus:
-                type: string
               pendingDevBranches:
                 items:
                   type: string

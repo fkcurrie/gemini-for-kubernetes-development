@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
@@ -36,6 +38,11 @@ var (
 		Version:  "v1alpha1",
 		Resource: "sandboxes",
 	}
+	OverseerGVR = schema.GroupVersionResource{
+		Group:    "overseer.gemini.google.com",
+		Version:  "v1alpha1",
+		Resource: "overseers",
+	}
 )
 
 type Manager struct {
@@ -46,6 +53,20 @@ type Manager struct {
 
 func NewManager(kube *clients.KubernetesClient) *Manager {
 	return &Manager{Client: kube.DynamicClient, Clientset: kube.Clientset, KubeClient: kube}
+}
+
+func (m *Manager) ListOverseers(ctx context.Context) (*unstructured.UnstructuredList, error) {
+	return m.Client.Resource(OverseerGVR).List(ctx, v1.ListOptions{})
+}
+
+func (m *Manager) GetOverseer(ctx context.Context, name string) (*unstructured.Unstructured, error) {
+	return m.Client.Resource(OverseerGVR).Get(ctx, name, v1.GetOptions{})
+}
+
+func (m *Manager) ListSandboxes(ctx context.Context, namespace string, labelSelector string) (*unstructured.UnstructuredList, error) {
+	return m.Client.Resource(SandboxGVR).Namespace(namespace).List(ctx, v1.ListOptions{
+		LabelSelector: labelSelector,
+	})
 }
 
 func (m *Manager) GetConfigDir(ctx context.Context, namespace, name string) (*unstructured.Unstructured, error) {
@@ -188,10 +209,10 @@ func (m *Manager) ScaledownSandbox(ctx context.Context, namespace, repo, prID st
 	return nil
 }
 
-func (m *Manager) UpdateReviewSandboxUserDraft(ctx context.Context, namespace, sandboxName, userDraft string) error {
+func (m *Manager) UpdateSandboxUserDraft(ctx context.Context, namespace, sandboxName, userDraft string) error {
 	sandbox, err := m.Client.Resource(SandboxGVR).Namespace(namespace).Get(ctx, sandboxName, v1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get reviewsandbox %s: %w", sandboxName, err)
+		return fmt.Errorf("failed to get sandbox %s: %w", sandboxName, err)
 	}
 
 	if sandbox.GetAnnotations() == nil {
@@ -203,16 +224,16 @@ func (m *Manager) UpdateReviewSandboxUserDraft(ctx context.Context, namespace, s
 
 	_, err = m.Client.Resource(SandboxGVR).Namespace(namespace).Update(context.TODO(), sandbox, v1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to update reviewsandbox annotation: %w", err)
+		return fmt.Errorf("failed to update sandbox annotation: %w", err)
 	}
 
 	return nil
 }
 
-func (m *Manager) UpdateReviewSandboxAnnotation(ctx context.Context, namespace, sandboxName, key, value string) error {
+func (m *Manager) UpdateSandboxAnnotation(ctx context.Context, namespace, sandboxName, key, value string) error {
 	sandbox, err := m.Client.Resource(SandboxGVR).Namespace(namespace).Get(ctx, sandboxName, v1.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get reviewsandbox %s: %w", sandboxName, err)
+		return fmt.Errorf("failed to get sandbox %s: %w", sandboxName, err)
 	}
 
 	if sandbox.GetAnnotations() == nil {
@@ -224,28 +245,7 @@ func (m *Manager) UpdateReviewSandboxAnnotation(ctx context.Context, namespace, 
 
 	_, err = m.Client.Resource(SandboxGVR).Namespace(namespace).Update(ctx, sandbox, v1.UpdateOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to update reviewsandbox annotation: %w", err)
-	}
-
-	return nil
-}
-
-func (m *Manager) UpdateDevSandboxAnnotation(ctx context.Context, namespace, sandboxName, key, value string) error {
-	sandbox, err := m.Client.Resource(SandboxGVR).Namespace(namespace).Get(ctx, sandboxName, v1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to get devsandbox %s: %w", sandboxName, err)
-	}
-
-	if sandbox.GetAnnotations() == nil {
-		sandbox.SetAnnotations(make(map[string]string))
-	}
-	annotations := sandbox.GetAnnotations()
-	annotations[key] = value
-	sandbox.SetAnnotations(annotations)
-
-	_, err = m.Client.Resource(SandboxGVR).Namespace(namespace).Update(ctx, sandbox, v1.UpdateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to update devsandbox annotation: %w", err)
+		return fmt.Errorf("failed to update sandbox annotation: %w", err)
 	}
 
 	return nil
@@ -305,9 +305,9 @@ func (m *Manager) ScaledownIssueSandbox(ctx context.Context, namespace, repo, is
 	log := klog.FromContext(ctx)
 	var sandboxName string
 	if handler != "" {
-		sandboxName = fmt.Sprintf("devc-%s-issue-%s-%s", repo, issueID, handler)
+		sandboxName = fmt.Sprintf("%s-issue-%s-%s", repo, issueID, handler)
 	} else {
-		sandboxName = fmt.Sprintf("devc-%s-issue-%s", repo, issueID)
+		sandboxName = fmt.Sprintf("%s-issue-%s", repo, issueID)
 	}
 
 	log.Info("Scaling down issue sandbox", "name", sandboxName)
@@ -422,7 +422,7 @@ func (m *Manager) ScaleupSandbox(ctx context.Context, namespace, repo, prID, ann
 
 func (m *Manager) ScaleupIssueSandbox(ctx context.Context, namespace, repo, issueID, handler, annotationValue string) error {
 	log := klog.FromContext(ctx)
-	sandboxName := fmt.Sprintf("devc-%s-issue-%s", repo, issueID)
+	sandboxName := fmt.Sprintf("%s-issue-%s", repo, issueID)
 
 	log.Info("Scaling up issue sandbox", "name", sandboxName, "handler", handler, "annotationValue", annotationValue)
 
@@ -504,11 +504,17 @@ func (m *Manager) ListSandboxTasks(ctx context.Context, namespace, sandboxName s
 		Version:  "v1alpha1",
 		Resource: "sandboxtasks",
 	}
+
+	labelSelector := ""
+	if sandboxName != "" {
+		labelSelector = fmt.Sprintf("sandbox.gemini.google.com/sandbox-name=%s", sandboxName)
+	}
+
 	unstructuredList, err := m.Client.Resource(gvr).Namespace(namespace).List(ctx, v1.ListOptions{
-		LabelSelector: fmt.Sprintf("sandbox.gemini.google.com/sandbox-name=%s", sandboxName),
+		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list sandboxtasks: %w", err)
 	}
 
 	taskList := &sandboxtaskv1alpha1.SandboxTaskList{}
@@ -516,6 +522,7 @@ func (m *Manager) ListSandboxTasks(ctx context.Context, namespace, sandboxName s
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert unstructured list to SandboxTaskList: %w", err)
 	}
+
 	return taskList, nil
 }
 
@@ -556,7 +563,7 @@ func (m *Manager) CreateSandboxTask(ctx context.Context, namespace, sandboxName,
 	// Determine the GVR for the sandbox owner
 	var ownerGVR schema.GroupVersionResource
 	switch sandboxKind {
-	case "Sandbox", "ReviewSandbox", "IssueSandbox":
+	case "Sandbox":
 		ownerGVR = SandboxGVR
 	default:
 		return fmt.Errorf("unknown sandbox kind: %s", sandboxKind)
@@ -606,35 +613,38 @@ func (m *Manager) CreateSandboxTask(ctx context.Context, namespace, sandboxName,
 	return err
 }
 
-func (m *Manager) UpdateSandboxTaskStatus(ctx context.Context, namespace, taskName, state, result string) error {
+func (m *Manager) UpdateSandboxTaskStatus(ctx context.Context, namespace, taskName, state, result string, stats *sandboxtaskv1alpha1.Stats) error {
 	klog.Infof("Updating task %s status to %s", taskName, state)
 
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-	metadata := map[string]interface{}{
-		"name":      taskName,
-		"namespace": namespace,
+	now := v1.Now()
+	timestamp := now.UTC().Format(time.RFC3339)
+
+	statusMap := map[string]interface{}{
+		"taskState": state,
+		"result":    result,
 	}
 
 	if state == "Running" {
-		metadata["annotations"] = map[string]interface{}{
-			"sandbox.gemini.google.com/start-time": timestamp,
-		}
+		statusMap["startTime"] = timestamp
 	} else if state == "Completed" || state == "Failed" {
-		metadata["annotations"] = map[string]interface{}{
-			"sandbox.gemini.google.com/completion-time": timestamp,
-		}
+		statusMap["completionTime"] = timestamp
 	}
 
-	applyObj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "custom.agents.x-k8s.io/v1alpha1",
-			"kind":       "SandboxTask",
-			"metadata":   metadata,
-			"status": map[string]interface{}{
-				"taskState": state,
-				"result":    result,
-			},
-		},
+	if stats != nil {
+		usageMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(stats)
+		if err != nil {
+			return fmt.Errorf("failed to convert stats to unstructured: %w", err)
+		}
+		statusMap["stats"] = usageMap
+	}
+
+	patch := map[string]interface{}{
+		"status": statusMap,
+	}
+
+	patchBytes, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("failed to marshal patch: %w", err)
 	}
 
 	gvr := schema.GroupVersionResource{
@@ -643,6 +653,6 @@ func (m *Manager) UpdateSandboxTaskStatus(ctx context.Context, namespace, taskNa
 		Resource: "sandboxtasks",
 	}
 
-	_, err := m.Client.Resource(gvr).Namespace(namespace).ApplyStatus(ctx, taskName, applyObj, v1.ApplyOptions{FieldManager: "task-runner", Force: true})
+	_, err = m.Client.Resource(gvr).Namespace(namespace).Patch(ctx, taskName, types.MergePatchType, patchBytes, v1.PatchOptions{}, "status")
 	return err
 }

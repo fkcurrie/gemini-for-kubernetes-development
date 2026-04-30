@@ -145,7 +145,7 @@ def inject_issue_model_list(repowatch):
     if "issue" in spec and isinstance(spec["issue"], dict):
         target_models = [
             "gemini-3-flash-preview",
-            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
             "gemini-2.5-pro",
             "gemini-2.5-flash"
         ]
@@ -156,6 +156,27 @@ def inject_issue_model_list(repowatch):
             spec["issue"]["models"] = target_models
             changed = True
             
+    return changed
+
+def set_kcc_workspace_disk_size(repowatch):
+    """
+    Sets spec.dev.workspaceDiskSize, spec.review.workspaceDiskSize, and spec.issue.workspaceDiskSize
+    to 20Gi for k8s-config-connector repowatch.
+    """
+    if repowatch.get("metadata", {}).get("name") != "k8s-config-connector":
+        return False
+
+    changed = False
+    spec = repowatch.get("spec", {})
+    target_size = "20Gi"
+
+    for section in ["dev", "review", "issue"]:
+        if section in spec and isinstance(spec[section], dict):
+            if spec[section].get("workspaceDiskSize") != target_size:
+                print(f"  Setting spec.{section}.workspaceDiskSize to {target_size}")
+                spec[section]["workspaceDiskSize"] = target_size
+                changed = True
+
     return changed
 
 def apply_changes(repowatch):
@@ -204,6 +225,7 @@ def main():
         "migrate-issues-taskbased-022026": fix_issues_spec,
         "set-dev-maxcounts-0": disable_dev_sandboxes,
         "inject-issue-model-list-02122026": inject_issue_model_list,
+        "set-kcc-workspace-disk-size-20Gi-030126": set_kcc_workspace_disk_size,
     }
 
     if not args.mutator:

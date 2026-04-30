@@ -1,0 +1,18 @@
+apiVersion: overseer.gemini.google.com/v1alpha1
+kind: Overseer
+metadata:
+  name: repo-agent
+spec:
+  repoURL: https://github.com/gke-labs/gemini-for-kubernetes-development
+  robotAccount: codebot-robot
+  maxActiveReviews: 3
+  maxActiveIssues: 3
+  chores:
+    mode: disabled
+  geminiAPIKeySecretName: gemini-vscode-tokens
+  ephemeralStorage: 10Gi
+  image: ghcr.io/gke-labs/gemini-for-kubernetes-development/generic-golang:latest
+  repo:
+    issueMode: disabled
+    prMode: disabled
+    reviewMode: enabled
