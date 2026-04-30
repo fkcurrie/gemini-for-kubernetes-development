@@ -17,6 +17,8 @@ limitations under the License.
 package main
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -284,11 +286,14 @@ func TestGetNumber(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotIssue := getIssueNumber(tt.labels, tt.sandboxName, tt.overseerName)
+			issueRe := regexp.MustCompile(fmt.Sprintf(`^%s-issue-(\d+)`, regexp.QuoteMeta(tt.overseerName)))
+			prRe := regexp.MustCompile(fmt.Sprintf(`^%s-pr-(\d+)`, regexp.QuoteMeta(tt.overseerName)))
+
+			gotIssue := getIssueNumber(tt.labels, tt.sandboxName, issueRe)
 			if gotIssue != tt.wantIssue {
 				t.Errorf("getIssueNumber() = %d, want %d", gotIssue, tt.wantIssue)
 			}
-			gotPR := getPRNumber(tt.labels, tt.sandboxName, tt.overseerName)
+			gotPR := getPRNumber(tt.labels, tt.sandboxName, prRe)
 			if gotPR != tt.wantPR {
 				t.Errorf("getPRNumber() = %d, want %d", gotPR, tt.wantPR)
 			}

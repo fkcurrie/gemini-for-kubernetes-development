@@ -517,15 +517,27 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 
 	if number == 0 && prNumber != 0 {
 		klog.Infof("Resolving issue from PR %d...", prNumber)
-		number, err = resolveIssueFromPR(ctx, owner, repo, prNumber)
-		if err != nil {
-			return fmt.Errorf("failed to resolve issue from PR: %w", err)
+		if isDryRun {
+			klog.Infof("[dryrun] Would resolve issue from PR %d", prNumber)
+			number = prNumber
+		} else {
+			number, err = resolveIssueFromPR(ctx, owner, repo, prNumber)
+			if err != nil {
+				return fmt.Errorf("failed to resolve issue from PR: %w", err)
+			}
+			klog.Infof("Resolved to issue %d", number)
 		}
-		klog.Infof("Resolved to issue %d", number)
 	}
 
 	if number == 0 {
 		return fmt.Errorf("either --number or --pr must be provided")
+	}
+
+	var issueTitle string
+	if isDryRun {
+		issueTitle = "issue-title-placeholder"
+		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for issue %d in Overseer %s", taskType, number, overseerName)
+		return nil
 	}
 
 	ghClient, err := github.NewClient(ctx)
@@ -537,11 +549,7 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 	if err != nil {
 		return fmt.Errorf("failed to get issue %d: %w", number, err)
 	}
-
-	if isDryRun {
-		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for issue %d (%s) in Overseer %s", taskType, number, issue.GetTitle(), overseerName)
-		return nil
-	}
+	issueTitle = issue.GetTitle()
 
 	if err := ensureGitHubUser(ctx, ghClient, isDryRun); err != nil {
 		return err
@@ -577,7 +585,7 @@ func runIssue(ctx context.Context, number int, prNumber int, taskType string, cu
 
 	// Create Sandbox if it doesn't exist
 	if !sandboxExists {
-		klog.Infof("Creating sandbox %s...", sandboxName)
+		klog.Infof("Creating sandbox %s for issue %q...", sandboxName, issueTitle)
 		if err := createIssueSandbox(ctx, kubeClient, &overseer, issue); err != nil {
 			return fmt.Errorf("failed to create issue sandbox: %w", err)
 		}
@@ -665,6 +673,11 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 		return fmt.Errorf("failed to parse RepoURL: %w", err)
 	}
 
+	if isDryRun {
+		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for PR %d in Overseer %s", taskType, number, overseerName)
+		return nil
+	}
+
 	ghClient, err := github.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create github client: %w", err)
@@ -673,11 +686,6 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 	pr, _, err := ghClient.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
 		return fmt.Errorf("failed to get PR %d: %w", number, err)
-	}
-
-	if isDryRun {
-		klog.Infof("[dryrun] Would create/ensure sandbox and task %s for PR %d (%s) in Overseer %s", taskType, number, pr.GetTitle(), overseerName)
-		return nil
 	}
 
 	if err := ensureGitHubUser(ctx, ghClient, isDryRun); err != nil {
@@ -730,7 +738,7 @@ func runPR(ctx context.Context, number int, taskType string, submit bool, custom
 
 	// Create Sandbox if it doesn't exist
 	if !sandboxExists {
-		klog.Infof("Creating sandbox %s...", sandboxName)
+		klog.Infof("Creating sandbox %s for PR %d %q...", sandboxName, number, pr.GetTitle())
 		if err := createPRSandbox(ctx, kubeClient, &overseer, pr); err != nil {
 			return fmt.Errorf("failed to create PR sandbox: %w", err)
 		}
@@ -1256,7 +1264,7 @@ func getOverseer(ctx context.Context, dynClient dynamic.Interface, name string) 
 	return dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 }
 
-func getIssueNumber(labels map[string]string, name string, overseerName string) int {
+func getIssueNumber(labels map[string]string, name string, re *regexp.Regexp) int {
 	if numStr, ok := labels["issue.gemini.google.com/number"]; ok {
 		num, err := strconv.Atoi(numStr)
 		if err == nil {
@@ -1264,18 +1272,18 @@ func getIssueNumber(labels map[string]string, name string, overseerName string) 
 		}
 		klog.V(4).Infof("failed to parse issue number %q: %v", numStr, err)
 	}
-	// Fallback to name inference: <overseerName>-issue-<number>
-	// Use regex to handle potential suffixes or truncation artifacts
-	re := regexp.MustCompile(fmt.Sprintf(`^%s-issue-(\d+)`, regexp.QuoteMeta(overseerName)))
-	matches := re.FindStringSubmatch(name)
-	if len(matches) > 1 {
-		num, _ := strconv.Atoi(matches[1])
-		return num
+	// Fallback to name inference
+	if re != nil {
+		matches := re.FindStringSubmatch(name)
+		if len(matches) > 1 {
+			num, _ := strconv.Atoi(matches[1])
+			return num
+		}
 	}
 	return 0
 }
 
-func getPRNumber(labels map[string]string, name string, overseerName string) int {
+func getPRNumber(labels map[string]string, name string, re *regexp.Regexp) int {
 	if numStr, ok := labels["pr.gemini.google.com/number"]; ok {
 		num, err := strconv.Atoi(numStr)
 		if err == nil {
@@ -1283,12 +1291,13 @@ func getPRNumber(labels map[string]string, name string, overseerName string) int
 		}
 		klog.V(4).Infof("failed to parse PR number %q: %v", numStr, err)
 	}
-	// Fallback to name inference: <overseerName>-pr-<number>
-	re := regexp.MustCompile(fmt.Sprintf(`^%s-pr-(\d+)`, regexp.QuoteMeta(overseerName)))
-	matches := re.FindStringSubmatch(name)
-	if len(matches) > 1 {
-		num, _ := strconv.Atoi(matches[1])
-		return num
+	// Fallback to name inference
+	if re != nil {
+		matches := re.FindStringSubmatch(name)
+		if len(matches) > 1 {
+			num, _ := strconv.Atoi(matches[1])
+			return num
+		}
 	}
 	return 0
 }
@@ -1433,7 +1442,11 @@ func runReconcile(ctx context.Context) error {
 		return fmt.Errorf("failed to list sandboxes: %w", err)
 	}
 
-	// 3. Reconcile sandboxes
+	// 3. Pre-compile regexes for name inference
+	issueRe := regexp.MustCompile(fmt.Sprintf(`^%s-issue-(\d+)`, regexp.QuoteMeta(overseer.Name)))
+	prRe := regexp.MustCompile(fmt.Sprintf(`^%s-pr-(\d+)`, regexp.QuoteMeta(overseer.Name)))
+
+	// 4. Reconcile sandboxes
 	skippedCount := 0
 	var reconcileErrs []error
 	issueStatusCache := make(map[int]bool)
@@ -1506,7 +1519,7 @@ func runReconcile(ctx context.Context) error {
 					isDryRun = true
 				}
 				if ghClient != nil {
-					num := getIssueNumber(labels, item.GetName(), overseer.Name)
+					num := getIssueNumber(labels, item.GetName(), issueRe)
 					if num > 0 {
 						open, cached := issueStatusCache[num]
 						if !cached {
@@ -1537,7 +1550,7 @@ func runReconcile(ctx context.Context) error {
 				isDryRun = dryRun || (reviewMode != "enabled" && prMode != "enabled")
 
 				if ghClient != nil {
-					num := getPRNumber(labels, item.GetName(), overseer.Name)
+					num := getPRNumber(labels, item.GetName(), prRe)
 					if num > 0 {
 						open, cached := prStatusCache[num]
 						if !cached {
@@ -1819,7 +1832,6 @@ func deleteSandbox(ctx context.Context, kubeClient *clients.KubernetesClient, na
 func getMode(name string) string {
 	val := os.Getenv(name)
 	m := strings.ToLower(strings.Trim(val, " \t\n\r\"'"))
-	m = strings.TrimSpace(m)
 	switch m {
 	case "enabled", "enable", "true", "1", "yes", "on", "t", "y":
 		return "enabled"
