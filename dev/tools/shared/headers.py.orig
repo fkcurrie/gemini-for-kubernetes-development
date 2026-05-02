@@ -150,7 +150,7 @@ def has_license_header(file_path):
             content = f.read(4096)
             if not "Licensed under the Apache License, Version 2.0" in content:
                 return False
-            if "The Kubernetes Authors" not in content and "Google LLC" not in content and "The Gemini For Kubernetes Development Authors" not in content:
+            if not "The Kubernetes Authors" in content:
                 return False
             return True
     except Exception as e:

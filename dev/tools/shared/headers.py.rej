@@ -1,0 +1,11 @@
+--- dev/tools/shared/headers.py
++++ dev/tools/shared/headers.py
+@@ -88,7 +88,7 @@
+             content = f.read(4096)
+             if not "Licensed under the Apache License, Version 2.0" in content:
+                 return False
+-            if "The Kubernetes Authors" not in content and "Google LLC" not in content:
++            if "The Kubernetes Authors" not in content and "Google LLC" not in content and "The Gemini For Kubernetes Development Authors" not in content:
+                 return False
+             return True
+     except Exception as e:
