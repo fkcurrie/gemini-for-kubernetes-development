@@ -30,6 +30,7 @@ def main():
 
     excludes = [
         "**/zz_generated.*",
+        "dev/ci/presubmits/ap-*",
     ]
 
     print(f"Scanning for license headers in {repo_root}")
