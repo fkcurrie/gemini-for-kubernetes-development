@@ -1278,7 +1278,7 @@ func (r *Reconciler) createReviewSandboxForPR(ctx context.Context, user *github.
 			HTTPEnabled:           true,
 			Replicas:              1,
 			ServiceAccountName:    "review-sandbox",
-			GPU: gpu,
+			GPU:                   gpu,
 		},
 		PRNumber:          *pr.Number,
 		PRTitle:           *pr.Title,
