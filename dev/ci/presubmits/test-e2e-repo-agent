@@ -44,8 +44,8 @@ def main():
     ## create secrets
     GITHUB_PAT = os.getenv("GITHUB_PAT")
     if not GITHUB_PAT:
-        print("GITHUB_PAT environment variable is not set")
-        return 1
+        print("GITHUB_PAT environment variable is not set, using dummy token")
+        GITHUB_PAT="dummy_token"
     print("Creating github-token secret in repo-agent-system namespace")
     result = subprocess.run(["kubectl", "create", "namespace", "repo-agent-system"])
     if result.returncode != 0:
