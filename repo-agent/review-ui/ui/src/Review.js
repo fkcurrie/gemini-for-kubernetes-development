@@ -186,7 +186,7 @@ function Review({
         <div className="review-sidebar">
             <div className="sidebar-section">
                 <h4 className="sidebar-header">
-                    Active ({activeList.length}/{activeRepo.review?.maxActiveSandboxes ?? '?'})
+                    Active ({activeList.length}/{activeRepo?.review?.maxActiveSandboxes ?? '?'})
                 </h4>
                 {activeList.map(renderSidebarItem)}
                 <div className="sidebar-item add-pr" onClick={() => handleAddPR()} style={{textAlign: 'center', cursor: 'pointer', color: 'var(--text-secondary)', border: '1px dashed var(--border-color)'}}>

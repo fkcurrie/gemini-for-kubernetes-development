@@ -117,7 +117,7 @@ const ExplorationNode = ({ ideaID, description, isExpanded, onToggle, onAddAppro
                     {description && (
                         <span style={{
                             fontSize: '0.85em',
-                            color: '#6a737d',
+                            color: 'var(--text-secondary)',
                             fontWeight: 'normal',
                             marginLeft: '8px',
                             fontFamily: 'monospace'
