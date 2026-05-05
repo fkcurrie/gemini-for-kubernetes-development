@@ -13,6 +13,7 @@ COPY overseer/go.sum overseer/go.sum
 COPY agentsandboxes/go.mod agentsandboxes/go.mod
 COPY agentsandboxes/go.sum agentsandboxes/go.sum
 COPY dev/tools/go.mod dev/tools/go.mod
+COPY docs/gke-install/installer/go.mod docs/gke-install/installer/go.mod
 COPY dev/tools/go.sum dev/tools/go.sum
 COPY docs/gke-install/installer/go.mod docs/gke-install/installer/go.mod
 COPY services/container-registry/go.mod services/container-registry/go.mod
