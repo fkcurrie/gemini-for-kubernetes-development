@@ -212,8 +212,8 @@ function DevSidebar({
 
     return (
         <div className="dev-sidebar">
-            <div className="sidebar-header-row" style={{flexDirection: "column", alignItems: "flex-start"}}>
-                <div style={{display: "flex", justifyContent: "space-between", width: "100%"}}>
+            <div className="sidebar-header-row sidebar-header-col">
+                <div className="sidebar-header-flex-between">
                     <span className="sidebar-header-title">EXPLORATIONS</span>
                     <button 
                         className="sidebar-header-btn" 
@@ -223,59 +223,67 @@ function DevSidebar({
                         <PlusIcon />
                     </button>
                 </div>
-                <div style={{fontSize: "0.8em", color: "#666", marginTop: "4px", paddingLeft: "10px"}}>
+                <div className="sidebar-header-subtitle">
                     Active ({activeCount}/{activeRepo?.dev?.maxActiveSandboxes ?? '?'})
                 </div>
             </div>
             
             <div className="sidebar-tree-content">
-                {Object.keys(explorations).map(ideaID => {
-                    const roots = buildTree(explorations[ideaID]);
-                    const isExpanded = expandedGroups[ideaID];
-                    const description = explorations[ideaID].find(s => s.description)?.description;
-
-                    return (
-                        <ExplorationNode
-                            key={ideaID}
-                            ideaID={ideaID}
-                            description={description}
-                            isExpanded={isExpanded}
-                            onToggle={() => toggleGroup(ideaID)}
-                            onAddApproach={onAddApproach}
-                        >
-                            {isExpanded && roots.map(root => (
-                                <TreeNode 
-                                    key={root.name}
-                                    node={root}
-                                    level={1} 
-                                    activeSandbox={activeSandbox}
-                                    onSelect={onSelectSandbox}
-                                    onAddApproach={onAddApproach}
-                                    ideaID={ideaID}
-                                />
-                            ))}
-                        </ExplorationNode>
-                    );
-                })}
-                
-                {ungrouped.length > 0 && (
-                    <div className="tree-root-group" style={{marginTop: '20px'}}>
-                        <div className="sidebar-tree-row root-row" style={{cursor: 'default'}}>
-                            <span className="tree-expander"></span>
-                            <span className="tree-label root-label" style={{color: 'var(--text-secondary)'}}>MISC</span>
-                        </div>
-                        {ungrouped.map(sandbox => (
-                             <div 
-                                key={sandbox.name}
-                                className={`sidebar-tree-row ${activeSandbox && activeSandbox.name === sandbox.name ? 'active' : ''}`}
-                                style={{ paddingLeft: '24px' }}
-                                onClick={() => onSelectSandbox(sandbox)}
-                            >
-                                <span className="tree-icon"><FileIcon /></span>
-                                <span className="tree-label">{sandbox.branch}</span>
-                            </div>
-                        ))}
+                {Object.keys(explorations).length === 0 && ungrouped.length === 0 ? (
+                    <div className="empty-state" style={{padding: '20px', textAlign: 'center', color: 'var(--text-secondary)'}}>
+                        <p>No active dev sandboxes.</p>
                     </div>
+                ) : (
+                    <>
+                        {Object.keys(explorations).map(ideaID => {
+                            const roots = buildTree(explorations[ideaID]);
+                            const isExpanded = expandedGroups[ideaID];
+                            const description = explorations[ideaID].find(s => s.description)?.description;
+
+                            return (
+                                <ExplorationNode
+                                    key={ideaID}
+                                    ideaID={ideaID}
+                                    description={description}
+                                    isExpanded={isExpanded}
+                                    onToggle={() => toggleGroup(ideaID)}
+                                    onAddApproach={onAddApproach}
+                                >
+                                    {isExpanded && roots.map(root => (
+                                        <TreeNode 
+                                            key={root.name}
+                                            node={root}
+                                            level={1} 
+                                            activeSandbox={activeSandbox}
+                                            onSelect={onSelectSandbox}
+                                            onAddApproach={onAddApproach}
+                                            ideaID={ideaID}
+                                        />
+                                    ))}
+                                </ExplorationNode>
+                            );
+                        })}
+                        
+                        {ungrouped.length > 0 && (
+                            <div className="tree-root-group" style={{marginTop: '20px'}}>
+                                <div className="sidebar-tree-row root-row" style={{cursor: 'default'}}>
+                                    <span className="tree-expander"></span>
+                                    <span className="tree-label root-label" style={{color: 'var(--text-secondary)'}}>MISC</span>
+                                </div>
+                                {ungrouped.map(sandbox => (
+                                     <div 
+                                        key={sandbox.name}
+                                        className={`sidebar-tree-row ${activeSandbox && activeSandbox.name === sandbox.name ? 'active' : ''}`}
+                                        style={{ paddingLeft: '24px' }}
+                                        onClick={() => onSelectSandbox(sandbox)}
+                                    >
+                                        <span className="tree-icon"><FileIcon /></span>
+                                        <span className="tree-label">{sandbox.branch}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
         </div>

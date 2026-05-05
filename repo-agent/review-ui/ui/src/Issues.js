@@ -258,7 +258,7 @@ function Issues({
         <div className="review-sidebar">
             <div className="sidebar-section">
                 <h4 className="sidebar-header">
-                    Active ({activeList.length}/{activeRepo.issue?.maxActiveSandboxes ?? '?'})
+                    Active ({activeList.length}/{activeRepo?.issue?.maxActiveSandboxes ?? '?'})
                 </h4>
                 {activeList.map(renderSidebarItem)}
                 <div className="sidebar-item add-pr" onClick={() => handleAddIssue()} style={{textAlign: 'center', cursor: 'pointer', color: 'var(--text-secondary)', border: '1px dashed var(--border-color)'}}>

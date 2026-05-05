@@ -1297,7 +1297,13 @@ function App() {
         />
       );
     }
-    return null;
+    return (
+      <div className="empty-state" style={{padding: '50px', textAlign: 'center', color: 'var(--text-secondary)'}}>
+        <h3>Unsupported Tab</h3>
+        <p>The selected tab '{activeSubTab?.name}' is not supported or encountered an error.</p>
+        <button className="btn" onClick={() => setActiveSubTab({ repo: activeRepo.name, name: 'review' })}>Go back to Review</button>
+      </div>
+    );
   };
 
   const renderDashboard = () => {
